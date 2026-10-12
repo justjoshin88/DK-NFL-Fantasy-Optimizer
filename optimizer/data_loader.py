@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import json
 import os
 from typing import List, Dict, Any
@@ -53,13 +54,33 @@ class DataLoader:
         missing = [col for col in self.REQUIRED_COLUMNS if col not in df.columns]
         if missing:
             raise ValueError(f"Missing required columns: {', '.join(missing)}")
+        if df.empty:
+            raise ValueError("The uploaded file has no players.")
 
         # Basic type coercion/validation
         try:
+            numeric_columns = ['salary', 'projection'] + [
+                col for col in ['projection_floor', 'projection_ceiling', 'ownership', 'projection_std', 'optimal_pct']
+                if col in df.columns
+            ]
+            for col in numeric_columns:
+                df[col] = pd.to_numeric(df[col], errors='raise')
+                if not np.isfinite(df[col]).all():
+                    raise ValueError(f"{col} must contain finite numbers for every player")
+            if (df['salary'] <= 0).any() or (df['salary'] % 1 != 0).any():
+                raise ValueError("salary must contain positive whole dollar amounts")
             df['salary'] = df['salary'].astype(int)
-            df['projection'] = df['projection'].astype(float)
         except Exception as e:
             raise TypeError(f"Data type mismatch in salary or projection columns: {e}")
+        for col in ['player_name', 'position', 'team', 'opponent']:
+            if df[col].isna().any() or df[col].astype(str).str.strip().eq('').any():
+                raise ValueError(f"{col} must be provided for every player")
+            df[col] = df[col].astype(str).str.strip()
+        for col in ['ownership', 'projection_std', 'optimal_pct']:
+            if col in df.columns and (df[col] < 0).any():
+                raise ValueError(f"{col} cannot be negative")
+        if 'ownership' in df.columns and (df['ownership'] > 100).any():
+            raise ValueError("ownership must be a percentage between 0 and 100")
 
     def normalize_positions(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -74,5 +95,9 @@ class DataLoader:
             'Defense/Special Teams': 'DST',
             'DST': 'DST'
         }
-        df['position'] = df['position'].replace(mapping)
+        df['position'] = df['position'].replace(mapping).str.upper()
+        df['position'] = df['position'].replace({'D/ST': 'DST', 'DEF': 'DST'})
+        invalid = sorted(set(df['position']) - {'QB', 'RB', 'WR', 'TE', 'DST'})
+        if invalid:
+            raise ValueError(f"Unsupported positions: {', '.join(invalid)}. Use QB, RB, WR, TE, DST.")
         return df

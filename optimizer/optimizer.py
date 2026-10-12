@@ -13,8 +13,8 @@ class NFLOptimizer:
 
         :param data: DataFrame containing 'player_name', 'position', 'salary', 'projection'
         """
-        self.data = data
-        self.players = data.index.tolist()
+        self.data = data.copy().reset_index(drop=True)
+        self.players = self.data.index.tolist()
         self.salary_cap = 50000
 
     def build_model(self, objective_column: str = 'projection', strategy_manager=None) -> Tuple[pulp.LpProblem, Dict[int, pulp.LpVariable]]:
@@ -40,6 +40,10 @@ class NFLOptimizer:
         prob += pulp.lpSum([player_vars[i] for i in self.players if self.data.loc[i, 'position'] == 'TE']) >= 1
         prob += pulp.lpSum([player_vars[i] for i in self.players if self.data.loc[i, 'position'] == 'DST']) == 1
         prob += pulp.lpSum([player_vars[i] for i in self.players]) == 9
+        # FLEX may only be an RB, WR, or TE.
+        for i in self.players:
+            if self.data.loc[i, 'position'] not in {'QB', 'RB', 'WR', 'TE', 'DST'}:
+                prob += player_vars[i] == 0
 
         # Advanced GPP Constraints
         if strategy_manager and strategy_manager.should_apply_stacking():
@@ -86,3 +90,57 @@ class NFLOptimizer:
 
         selected_indices = [i for i in self.players if pulp.value(player_vars[i]) == 1]
         return selected_indices
+
+
+def main():
+    import streamlit as st
+
+    # Streamlit executes this file directly; support package imports as well.
+    if __package__:
+        from .data_loader import DataLoader
+        from .strategy_manager import Strategy, StrategyManager
+    else:
+        from data_loader import DataLoader
+        from strategy_manager import Strategy, StrategyManager
+
+    st.set_page_config(page_title="DK NFL Fantasy Optimizer", layout="wide")
+    st.title("DK NFL Fantasy Optimizer")
+    st.write("Upload your NFL Classic salaries and projections to build a $50,000 lineup.")
+    st.caption("Classic roster: QB, 2 RB, 3 WR, TE, FLEX, DST. Showdown is not supported.")
+    with st.expander("Required file columns"):
+        st.write("player_name, position, salary, projection, team, opponent")
+        st.write("Optional: projection_floor, projection_ceiling, ownership (percent). "
+                 "DraftKings salary files need projections added before uploading.")
+    upload = st.file_uploader("Player data", type=["csv", "json"])
+    strategy = st.selectbox("Strategy", ["Cash", "GPP"])
+    if upload is None:
+        st.info("Upload a CSV or JSON file to begin.")
+        return
+    try:
+        loader = DataLoader()
+        data = loader.normalize_positions(loader.load_data(upload)).reset_index(drop=True)
+    except (ValueError, TypeError, OSError) as exc:
+        st.error(str(exc))
+        return
+    st.dataframe(data, hide_index=True)
+    if st.button("Build lineup", type="primary"):
+        manager = StrategyManager(Strategy.GPP if strategy == "GPP" else Strategy.CASH)
+        if strategy == "GPP" and "ownership" not in data.columns:
+            st.warning("No ownership column provided. The ownership cap will not be applied.")
+        try:
+            with st.spinner("Optimizing lineup..."):
+                optimizer = NFLOptimizer(data)
+                model, variables = optimizer.build_model(manager.get_objective_column(data.columns), manager)
+                lineup = optimizer.data.loc[optimizer.solve(model, variables)].copy()
+        except Exception as exc:
+            st.error(f"Unable to build a lineup: {exc}. Check roster coverage, salaries, and strategy constraints.")
+            return
+        st.success("Lineup built successfully")
+        st.metric("Total salary", f"${lineup['salary'].sum():,.0f}")
+        st.metric("Projected points", f"{lineup['projection'].sum():.2f}")
+        st.dataframe(lineup, hide_index=True)
+        st.download_button("Download lineup CSV", lineup.to_csv(index=False), "lineup.csv", "text/csv")
+
+
+if __name__ == "__main__":
+    main()

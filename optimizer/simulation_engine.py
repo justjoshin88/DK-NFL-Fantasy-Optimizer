@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import gamma
 from typing import List, Dict, Any
 import pulp
 
@@ -16,9 +15,9 @@ class SimulationEngine:
         :param data: DataFrame containing 'player_name', 'position', 'salary', 'projection'
         :param n_sims: Number of simulation iterations.
         """
-        self.data = data
+        self.data = data.copy().reset_index(drop=True)
         self.n_sims = n_sims
-        self.players = data.index.tolist()
+        self.players = self.data.index.tolist()
 
     def _fit_gamma_params(self, mean: float, std: float):
         """

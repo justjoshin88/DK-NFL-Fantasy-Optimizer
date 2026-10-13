@@ -155,7 +155,7 @@ def match_projections(pool, forecasts):
     forecast_fields = ['projection', 'exclusion_reason', 'injury_status', 'source', 'source_url', 'source_updated',
                        'fetched_at', 'ownership', 'spread', 'game_total', 'implied_team_total']
     data = pool.drop(columns=forecast_fields, errors='ignore').copy()
-    forecasts = forecasts.copy()
+    forecasts = pd.DataFrame(forecasts).copy()
     def key(row):
         name = normalize_team(row['team']) if row['position'] == 'DST' else normalize_name(row['player_name'])
         return (name, normalize_team(row['team']), row['position'], normalize_team(row['opponent']), str(row['game_date']))

@@ -22,11 +22,14 @@ def recency_vector(scores, volumes, times, target):
 
 
 class MatchupContext:
-    def __init__(self, history, games):
-        self.games = games.set_index('game_id').to_dict('index')
+    def __init__(self, history, games, as_of=None):
+        self.as_of = pd.Timestamp(as_of) if as_of is not None else None
+        self.games = games[['game_id','home_team']].set_index('game_id').to_dict('index')
         self.venues = {}
         if 'roof' in games:
             completed_venues = games[games.home_score.notna() & games.away_score.notna() & games.roof.notna()]
+            if self.as_of is not None:
+                completed_venues = completed_venues[completed_venues.kickoff_time < self.as_of-pd.Timedelta(hours=6)]
             for team, rows in completed_venues.groupby('home_team'):
                 rows = rows.sort_values('kickoff_time')
                 self.venues[team] = (rows.kickoff_time.dt.as_unit('ns').astype('int64').to_numpy(), rows.roof.isin(['dome', 'closed']).to_numpy(float))
@@ -56,7 +59,8 @@ class MatchupContext:
             return np.empty(0), np.empty(0)
         times, values = entry
         # At least six hours after kickoff, matching the training data completion guard.
-        index = bisect_left(times, pd.Timestamp(target).value - 6*3_600_000_000_000)
+        cutoff = min(pd.Timestamp(target), self.as_of) if self.as_of is not None else pd.Timestamp(target)
+        index = bisect_left(times, cutoff.value - 6*3_600_000_000_000)
         return times[max(0, index-6):index], values[max(0, index-6):index]
 
     def team_vector(self, target, team, opponent, position, game_id):

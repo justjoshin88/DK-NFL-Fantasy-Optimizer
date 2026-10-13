@@ -6,6 +6,7 @@ Data attribution: nflverse, CC BY 4.0. See README for sources and limitations.
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import io
+from copy import copy
 import re
 
 import numpy as np
@@ -19,6 +20,7 @@ try:
     from .forecast_validation import train_models, predict, fit_ridge, residual_sample
     from .availability import depth_snapshot, player_availability
     from .scenarios import learn_dependence
+    from .freshness import history_revision, recent_time
     from .dk_csv import normalize_name, normalize_team
     from .providers import ProviderError, fetch_public, match_projections, BAD_STATUS
 except ImportError:
@@ -26,6 +28,7 @@ except ImportError:
     from forecast_validation import train_models, predict, fit_ridge, residual_sample
     from availability import depth_snapshot, player_availability
     from scenarios import learn_dependence
+    from freshness import history_revision, recent_time
     from dk_csv import normalize_name, normalize_team
     from providers import ProviderError, fetch_public, match_projections, BAD_STATUS
 
@@ -35,7 +38,8 @@ LICENSE_URL = 'https://github.com/nflverse/nflverse-data/blob/main/LICENSE.md'
 POSITIONS = {'QB', 'RB', 'WR', 'TE', 'K', 'DST'}
 MODEL_AUDIT = ['projection_std', 'projection_floor', 'projection_ceiling', 'model_type', 'training_last_game', 'last_played',
                'history_games', 'historical_player_id', 'model_built_at', 'recent_opportunities', 'depth_rank', 'depth_updated',
-               'injury_report_status', 'injury_report_week', 'availability_note']
+               'injury_report_status', 'injury_report_week', 'injury_report_updated', 'availability_note',
+               'current_team_history_games', 'role_warning', 'rosters_updated']
 
 SCORING_COLUMNS = ['passing_yards', 'passing_tds', 'passing_interceptions', 'rushing_yards', 'rushing_tds',
                 'receptions', 'receiving_yards', 'receiving_tds', 'fumbles_lost_total', 'special_teams_tds',
@@ -61,12 +65,15 @@ def download_csv(url):
         raise ProviderError(f'Free NFL file {url.rsplit("/", 1)[-1]} is unavailable. No synthetic replacement was generated.') from exc
 
 
-def load_datasets(pool):
+def pool_season(pool):
     seasons = {int(date[:4]) - (int(date[5:7]) < 3) for date in pool.game_date}
     if len(seasons) != 1:
         raise ProviderError('The free model requires one NFL season per pool.')
-    season = seasons.pop()
-    urls = dict(games=GAMES_URL, roster=BASE_URL + f'rosters/roster_{season}.csv')
+    return seasons.pop()
+
+
+def load_history(season):
+    urls = {}
     for year in range(max(1999, season-3), season+1):
         urls[f'players_{year}'] = BASE_URL + f'stats_player/stats_player_week_{year}.csv'
         urls[f'teams_{year}'] = BASE_URL + f'stats_team/stats_team_week_{year}.csv'
@@ -76,42 +83,72 @@ def load_datasets(pool):
         if name.startswith('players_'):
             require(frame, PLAYER_COLUMNS, 'NFL player stats')
             frames[name] = frame[PLAYER_COLUMNS].copy()
-    datasets = dict(games=frames['games'], roster=frames['roster'],
-                    players=pd.concat([v for k, v in frames.items() if k.startswith('players_')], ignore_index=True),
-                    teams=pd.concat([v for k, v in frames.items() if k.startswith('teams_')], ignore_index=True), urls=urls, source_notes=[])
-    optional = dict(depth=BASE_URL + f'depth_charts/depth_charts_{season}.csv.gz',
-                    injuries=BASE_URL + f'injuries/injuries_{season}.csv')
-    def optional_download(item):
-        name, url = item
-        try:
-            return name, download_csv(url), None
-        except ProviderError as exc:
-            return name, None, str(exc)
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        for name, data, error in executor.map(optional_download, optional.items()):
-            if data is not None:
-                if name == 'depth':
-                    data, _ = depth_snapshot(data, pd.Timestamp.now(tz='UTC'))
-                datasets[name] = data
-                urls[name] = optional[name]
-            else:
-                datasets['source_notes'].append(f'{name}: {error}; participation remains unverified.')
-    # Injury files lack row update times. Parse the publisher timestamp, not our fetch time.
+    datasets = dict(players=pd.concat([v for k,v in frames.items() if k.startswith('players_')], ignore_index=True),
+                    teams=pd.concat([v for k,v in frames.items() if k.startswith('teams_')], ignore_index=True),
+                    urls=urls, source_notes=[], history_fetched_at=pd.Timestamp.now(tz='UTC').isoformat())
+    datasets['history_revision'] = history_revision(datasets)
+    return datasets
+
+
+def publisher_time(release):
     try:
-        response = requests.get(BASE_URL+'injuries/timestamp.json', timeout=(5, 15))
+        response = requests.get(BASE_URL+release+'/timestamp.json', timeout=(10,15))
         response.raise_for_status()
         raw = response.json()['last_updated']
         match = re.fullmatch(r'(.*) (EDT|EST|UTC)', raw)
         if match:
-            offset = {'EDT':'-04:00', 'EST':'-05:00', 'UTC':'+00:00'}[match[2]]
-            datasets['injuries_updated'] = pd.Timestamp(match[1]+offset)
-        else:
-            stamp = pd.Timestamp(raw)
-            if stamp.tzinfo is not None:
-                datasets['injuries_updated'] = stamp
+            return pd.Timestamp(match[1]+{'EDT':'-04:00','EST':'-05:00','UTC':'+00:00'}[match[2]])
+        stamp = pd.Timestamp(raw)
+        return stamp if stamp.tzinfo is not None else None
     except (requests.RequestException, ValueError, KeyError):
+        return None
+
+
+def load_status(season):
+    urls = dict(games=GAMES_URL, roster=BASE_URL+f'rosters/roster_{season}.csv')
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        frames = dict(zip(urls, executor.map(download_csv, urls.values())))
+    datasets = dict(**frames, urls=urls, source_notes=[], status_fetched_at=pd.Timestamp.now(tz='UTC').isoformat())
+    optional = dict(depth=BASE_URL+f'depth_charts/depth_charts_{season}.csv.gz',
+                    injuries=BASE_URL+f'injuries/injuries_{season}.csv')
+    def optional_download(item):
+        name,url = item
+        try:
+            return name,download_csv(url),None
+        except ProviderError as exc:
+            return name,None,str(exc)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        for name,data,error in executor.map(optional_download, optional.items()):
+            if data is not None:
+                if name == 'depth':
+                    data,_ = depth_snapshot(data, pd.Timestamp.now(tz='UTC'))
+                datasets[name] = data
+                urls[name] = optional[name]
+            else:
+                datasets['source_notes'].append(f'{name}: {error}; participation remains unverified.')
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        timestamps = dict(zip(['rosters','injuries'], executor.map(publisher_time,['rosters','injuries'])))
+    datasets['rosters_updated'] = timestamps['rosters']
+    datasets['injuries_updated'] = timestamps['injuries']
+    datasets['roster_freshness_verified'] = recent_time(timestamps['rosters'], pd.Timestamp.now(tz='UTC'), 36*3600)
+    if not datasets['roster_freshness_verified']:
+        datasets['source_notes'].append('Roster publisher timestamp is absent/stale; own-model roster eligibility is blocked.')
+    if timestamps['injuries'] is None:
         datasets['source_notes'].append('Injury publisher freshness unavailable; report flags are not applied.')
     return datasets
+
+
+def load_datasets(pool):
+    season = pool_season(pool)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        history_future = executor.submit(load_history,season)
+        status_future = executor.submit(load_status,season)
+        return combine_datasets(history_future.result(),status_future.result())
+
+
+def combine_datasets(history, status):
+    return {**history,**status,'urls':{**history.get('urls',{}),**status.get('urls',{})},
+            'source_notes':history.get('source_notes',[])+status.get('source_notes',[])}
 
 
 def require(frame, columns, label):
@@ -218,14 +255,19 @@ def prepare_history(datasets, as_of):
     defense = defense_scores(teams, completed).merge(completed[['game_id', 'kickoff_time']], on='game_id', validate='many_to_one')
     for column in WORKLOAD:
         defense[column] = 0.
-    history = pd.concat([players, defense], ignore_index=True)
+    # Only these columns enter features, identities or audit output. Keep wide raw
+    # box scores outside the hot prediction/grouping path.
+    history_columns = ['player_id','player_display_name','position','team','game_id','kickoff_time','dk_score','volume']+WORKLOAD
+    history = pd.concat([players[history_columns],defense[history_columns]],ignore_index=True)
     history['team'] = history.team.map(normalize_team)
+    for column in ['player_id','player_display_name','position','team','game_id']:
+        history[column] = history[column].astype(object)
     # Resolve opponents from the exact schedule rather than relying on optional stat fields.
     schedule = completed.set_index('game_id')
     home = history.game_id.map(schedule.home_team)
     away = history.game_id.map(schedule.away_team)
     history['opponent_team'] = np.where(history.team.eq(home), away, home)
-    context = MatchupContext(history, games)
+    context = MatchupContext(history, games, as_of=as_of)
     denominators = np.array([context.denominators.get((r.team, r.game_id), (0, 0)) for r in history.itertuples()], float)
     history['target_share_feature'] = history.targets.to_numpy(float)/np.maximum(denominators[:, 0], 1)
     history['carry_share_feature'] = history.carries.to_numpy(float)/np.maximum(denominators[:, 1], 1)
@@ -262,7 +304,9 @@ def prepare_model(datasets, as_of=None):
         raise ValueError('Forecast cutoff must be timezone-aware.')
     history, records, games = prepare_history(datasets, as_of)
     models, metrics = train_models(records)
-    return dict(history=history, games=games, models=models, metrics=metrics, as_of=as_of)
+    context = MatchupContext(history,games,as_of=as_of)
+    groups = {(pid,pos):group.sort_values('kickoff_time') for (pid,pos),group in history.groupby(['player_id','position'])}
+    return dict(history=history,games=games,models=models,metrics=metrics,as_of=as_of,context=context,history_groups=groups)
 
 
 def generate_forecasts(pool, datasets, as_of=None, artifacts=None):
@@ -272,27 +316,47 @@ def generate_forecasts(pool, datasets, as_of=None, artifacts=None):
     artifacts = artifacts or prepare_model(datasets, as_of)
     if artifacts['as_of'] > as_of:
         raise ValueError('Cached model contains history after the forecast cutoff.')
-    history, games, models, metrics = [artifacts[k] for k in ['history', 'games', 'models', 'metrics']]
-    context = MatchupContext(history, games)
-    depth, depth_note = depth_snapshot(datasets.get('depth'), as_of)
-    roster = datasets['roster'].copy()
-    require(roster, ['full_name', 'team', 'position', 'status', 'gsis_id'], 'NFL rosters')
+    history, models, metrics = [artifacts[k] for k in ['history', 'models', 'metrics']]
+    # Current schedules can change without requiring a historical model refit.
+    games = schedule_times(datasets['games'])
+    if 'context' in artifacts:
+        context = copy(artifacts['context'])
+        context.games = games[['game_id','home_team']].set_index('game_id').to_dict('index')
+        context.cache = {}
+    else:
+        context = MatchupContext(history,games,as_of=as_of)
+    depth,depth_note = depth_snapshot(datasets.get('depth'),as_of)
+    roster_columns = ['full_name','team','position','status','gsis_id']
+    require(datasets['roster'],roster_columns,'NFL rosters')
+    roster = datasets['roster'][roster_columns].copy()
+    for column in roster_columns:
+        roster[column] = roster[column].astype(object)
     roster['team'] = roster.team.map(normalize_team)
     roster['name_key'] = roster.full_name.map(name_key)
-    roster_lookup = {key: group for key, group in roster.groupby(['name_key', 'team', 'position'])}
-    histories = {(pid, pos): group for (pid, pos), group in history.groupby(['player_id', 'position'])}
-    output, missing = [], []
+    roster_lookup = {key:group for key,group in roster.groupby(['name_key','team','position'])}
+    histories = artifacts.get('history_groups')
+    if histories is None:
+        histories = {(pid,pos):group for (pid,pos),group in history.groupby(['player_id','position'])}
+    game_lookup = {}
+    for game in games[['game_id','gameday','home_team','away_team','season','week','game_type','kickoff_time','kickoff_verified']].itertuples(index=False):
+        for team,opponent in [(game.home_team,game.away_team),(game.away_team,game.home_team)]:
+            game_lookup.setdefault((str(game.gameday)[:10],team,opponent),[]).append(game)
+    output, missing, identity_audit = [], [], {}
     for _, player in pool.drop_duplicates('player_key').iterrows():
+        if datasets.get('roster_freshness_verified') is False:
+            missing.append((player.player_key, 'Roster publisher freshness is unverified or stale'))
+            continue
         if player.position not in models:
             missing.append((player.player_key, 'No validated model for position'))
             continue
-        valid_game = games[(games.gameday == player.game_date) &
-                           (((games.away_team == player.team) & (games.home_team == player.opponent)) |
-                            ((games.home_team == player.team) & (games.away_team == player.opponent)))]
-        if len(valid_game) != 1:
-            missing.append((player.player_key, 'Pool date/team/opponent does not match free NFL schedule'))
+        valid_game = game_lookup.get((player.game_date,player.team,player.opponent),[])
+        if len(valid_game)!=1:
+            missing.append((player.player_key,'Pool date/team/opponent does not match free NFL schedule'))
             continue
-        game = valid_game.iloc[0]
+        game = valid_game[0]
+        if game.kickoff_time <= as_of:
+            missing.append((player.player_key,'Game has started; no new pregame forecast'))
+            continue
         if not game.kickoff_verified:
             missing.append((player.player_key, 'NFL schedule kickoff is unverified'))
             continue
@@ -314,6 +378,7 @@ def generate_forecasts(pool, datasets, as_of=None, artifacts=None):
         if unavailable:
             missing.append((player.player_key, unavailable))
             continue
+        identity_audit[player.player_key] = dict(historical_player_id=player_id,rosters_updated=str(datasets.get('rosters_updated') or ''),**availability)
         prior = histories.get((player_id, player.position))
         if prior is None or len(prior) < 3:
             missing.append((player.player_key, 'Fewer than three observed NFL games; no cold-start guess'))
@@ -335,9 +400,13 @@ def generate_forecasts(pool, datasets, as_of=None, artifacts=None):
                            source='Our free nflverse model', source_url='https://nflreadr.nflverse.com/',
                            source_updated=as_of.isoformat(), fetched_at=as_of.isoformat(), model_type=model['method'],
                            training_last_game=str(history.kickoff_time.max()), last_played=str(prior.kickoff_time.iloc[-1]),
-                           history_games=len(prior), historical_player_id=player_id, model_built_at=artifacts['as_of'].isoformat(),
+                           history_games=len(prior), historical_player_id=player_id,
+                           current_team_history_games=int(prior.team.eq(player.team).sum()),
+                           role_warning='Recent workload includes a different team' if prior.tail(3).team.ne(player.team).any() else '',
+                           rosters_updated=str(datasets.get('rosters_updated') or ''), model_built_at=artifacts['as_of'].isoformat(),
                            recent_opportunities=float(prior.volume.tail(3).mean()), **availability))
     forecasts = pd.DataFrame(output)
+    forecasts.attrs['identity_audit'] = identity_audit
     return forecasts, metrics, dict(missing), models
 
 
@@ -358,10 +427,13 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
         latest_week = injury_data.week.max() if 'week' in injury_data else 'unknown'
         messages.append(f'Injury source latest reported week: {latest_week}. Only exact-week fresh reports are applied; absent reports do not mean healthy.')
     generated, metrics, missing, models = generate_forecasts(pool, datasets, as_of, artifacts)
+    identity_audit = generated.attrs.get('identity_audit',{})
     if generated.empty and data is not None and data.exclusion_reason.eq('').any():
         for i, player in pool.reset_index(drop=True).iterrows():
+            for column,value in identity_audit.get(player.player_key,{}).items():
+                data.loc[i,column] = value
             reason = missing.get(player.player_key, '')
-            if reason.startswith(('Unavailable on exact-week', 'Conflicting exact-week', 'Current depth chart')):
+            if reason.startswith(('Unavailable on exact-week', 'Conflicting exact-week', 'Current depth chart', 'Current roster does not report active')):
                 data.loc[i, 'exclusion_reason'] = reason
         messages.append('Own model has no eligible histories; only covered public forecasts remain.')
         return data, messages
@@ -369,10 +441,17 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
         raise ProviderError('Free model found no eligible validated player histories for this slate. Check schedule and roster coverage.')
     model_data = match_projections(pool, generated)
     # Preserve model audit columns and residual-derived ceilings after the generic join.
-    extra = generated.set_index(['player_name', 'team', 'position', 'game_date'])
     for column in MODEL_AUDIT:
-        model_data[column] = [extra.loc[(p.player_name, p.team, p.position, p.game_date), column]
-                              if (p.player_name, p.team, p.position, p.game_date) in extra.index else np.nan for _, p in pool.iterrows()]
+        if column not in generated:
+            generated[column] = np.nan
+    audit_keys = ['player_name','team','position','game_date']
+    audit = pd.DataFrame(generated)[audit_keys+MODEL_AUDIT]
+    if audit.duplicated(audit_keys).any():
+        raise ProviderError('Conflicting player/game audit identities in model output.')
+    # One validated join preserves pool order and IDs without thousands of scalar
+    # lookups/copies of string-backed metadata columns on every refresh.
+    model_data = model_data.drop(columns=MODEL_AUDIT,errors='ignore').merge(
+        audit,on=audit_keys,how='left',sort=False,validate='many_to_one')
     for i, player in pool.reset_index(drop=True).iterrows():
         if player.player_key in missing:
             model_data.loc[i, 'exclusion_reason'] = missing[player.player_key]
@@ -387,13 +466,17 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
                 # Own-model uncertainty must not be attached to expert projections.
                 for column in MODEL_AUDIT:
                     model_data.loc[i, column] = np.nan
+                # Roster identity and status are independently verified, not expert uncertainty.
+                for column,value in identity_audit.get(player.player_key,{}).items():
+                    model_data.loc[i,column] = value
         reason = missing.get(player.player_key, '')
-        if reason.startswith(('Unavailable on exact-week', 'Conflicting exact-week', 'Current depth chart')):
+        if reason.startswith(('Unavailable on exact-week', 'Conflicting exact-week', 'Current depth chart', 'Current roster does not report active')):
             model_data.loc[i, 'exclusion_reason'] = reason
     dependence, dependence_audit = learn_dependence(metrics.attrs.get('calibration_records', pd.DataFrame()))
     model_data.attrs['free_model_calibration'] = {pos: {k: model[k] for k in ['residuals', 'residual_bounds', 'residual_bins']} for pos, model in models.items()}
     model_data.attrs['free_model_calibration']['_dependence'] = dependence
     model_data.attrs['free_model_dependence'] = dependence_audit
+    model_data.attrs['data_status'] = {k: str(datasets.get(k) or 'Unknown') for k in ['history_fetched_at','status_fetched_at','rosters_updated','injuries_updated']}
     model_data.attrs['free_model_metrics'] = metrics
     model_data.attrs['free_model_folds'] = metrics.attrs.get('fold_metrics', pd.DataFrame())
     model_data.attrs['free_model_test_predictions'] = metrics.attrs.get('test_predictions', pd.DataFrame())

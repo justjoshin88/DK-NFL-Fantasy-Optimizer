@@ -444,10 +444,14 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
     for column in MODEL_AUDIT:
         if column not in generated:
             generated[column] = np.nan
-    extra = pd.DataFrame(generated).set_index(['player_name', 'team', 'position', 'game_date'])
-    for column in MODEL_AUDIT:
-        model_data[column] = [extra.loc[(p.player_name, p.team, p.position, p.game_date), column]
-                              if (p.player_name, p.team, p.position, p.game_date) in extra.index else np.nan for _, p in pool.iterrows()]
+    audit_keys = ['player_name','team','position','game_date']
+    audit = pd.DataFrame(generated)[audit_keys+MODEL_AUDIT]
+    if audit.duplicated(audit_keys).any():
+        raise ProviderError('Conflicting player/game audit identities in model output.')
+    # One validated join preserves pool order and IDs without thousands of scalar
+    # lookups/copies of string-backed metadata columns on every refresh.
+    model_data = model_data.drop(columns=MODEL_AUDIT,errors='ignore').merge(
+        audit,on=audit_keys,how='left',sort=False,validate='many_to_one')
     for i, player in pool.reset_index(drop=True).iterrows():
         if player.player_key in missing:
             model_data.loc[i, 'exclusion_reason'] = missing[player.player_key]

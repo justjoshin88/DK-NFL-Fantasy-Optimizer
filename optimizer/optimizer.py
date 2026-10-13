@@ -92,12 +92,15 @@ class NFLOptimizer:
         return selected_indices
 
 
+APP_RELEASE = '2026.10.13.3'
+
 def main():
     if __package__:
         from .streamlit_ui import main as render_app
     else:
         from streamlit_ui import main as render_app
     render_app(NFLOptimizer)
+    st.caption(f'App release {APP_RELEASE}')
 
 
 if __name__ == "__main__":

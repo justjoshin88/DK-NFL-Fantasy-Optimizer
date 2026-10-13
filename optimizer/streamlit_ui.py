@@ -12,11 +12,13 @@ if __package__:
     from .providers import fetch_public, fetch_sportsdata, match_projections, fetch_contest, verify_contest_pool, load_projection_file, ProviderError
     from .lineup_engine import eligible_pool, build_portfolio
     from .calibration import calibrate, evaluate_portfolio
+    from .free_model import fetch_free, load_datasets
 else:
     from dk_csv import load_pool, read_text, export_rosters, roster_template
     from providers import fetch_public, fetch_sportsdata, match_projections, fetch_contest, verify_contest_pool, load_projection_file, ProviderError
     from lineup_engine import eligible_pool, build_portfolio
     from calibration import calibrate, evaluate_portfolio
+    from free_model import fetch_free, load_datasets
 
 
 def setting(name, default=''):
@@ -28,6 +30,8 @@ def setting(name, default=''):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def automatic_data(pool, provider, key_fingerprint='', _key='', production=False):
+    if provider == 'Free automatic':
+        return fetch_free(pool, datasets=free_datasets(pool))
     if provider == 'SportsDataIO':
         if not _key:
             raise ProviderError('SPORTSDATAIO_API_KEY is not configured. Use public forecasts or configure a licensed real-data feed in Streamlit Secrets.')
@@ -35,6 +39,11 @@ def automatic_data(pool, provider, key_fingerprint='', _key='', production=False
         return match_projections(pool, forecasts), []
     forecasts, messages = fetch_public(pool)
     return match_projections(pool, forecasts), messages
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def free_datasets(pool):
+    return load_datasets(pool)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -74,7 +83,7 @@ def main(optimizer_class=None):
         game_type = st.selectbox('Game type', ['Classic', 'Showdown'])
         strategy = st.selectbox('Strategy', ['Cash', 'GPP'])
         count = st.number_input('Lineups', 1, 20, 3)
-        provider = st.selectbox('Projection source', ['Public forecasts', 'SportsDataIO', 'Upload projections'])
+        provider = st.selectbox('Projection source', ['Free automatic', 'Public forecasts', 'SportsDataIO', 'Upload projections'])
         auto = st.checkbox('Retrieve automatically after upload', value=True)
         with st.expander('Licensed feed setup'):
             st.write('For SportsDataIO, add SPORTSDATAIO_API_KEY and SPORTSDATAIO_PRODUCTION = true to Streamlit Secrets. Only enable production for a real-data subscription; trial data is scrambled.')
@@ -92,6 +101,7 @@ def main(optimizer_class=None):
         st.write('Use the contest-specific DraftKings pool with Position, Name, ID, Roster Position, Salary, Game Info, TeamAbbrev. A roster-only template contains no player information.')
         st.write('Projection uploads need player_id and projection. Optional: ownership, injury_status, projection_ceiling, projection_std. Showdown projection values must be base FLEX scores for every row; the optimizer applies 1.5× for CPT.')
         st.write('No model guarantees a win. Forecast coverage, injury flags, ownership, and holdout diagnostics are shown for inspection. Payouts and opposing lineups are not automatically modeled; GPP recommendations are exploratory, not verified expected-profit estimates. Late-swap optimization is not supported.')
+        st.write('Free automatic uses published exact-game forecasts where available and our own nflverse estimates elsewhere. The model learns only from completed past games and is tested on later dates. It requires active-roster identity and at least three observed games; rookies, changed roles and game-day injuries can remain uncovered. No API key or paid scraper is required.')
     if upload is None:
         st.info('Upload the exact contest player pool CSV to begin.')
         return
@@ -165,6 +175,15 @@ def main(optimizer_class=None):
         st.session_state['forecast_digest'] = forecast_digest
         st.session_state.pop('portfolio', None)
     available, excluded = eligible_pool(data)
+    if 'free_model_metrics' in data.attrs:
+        st.warning(data.attrs['free_model_notes'])
+        with st.expander('Free model: untouched chronological test results'):
+            st.dataframe(data.attrs['free_model_metrics'], hide_index=True)
+            st.caption('Older 60% of dates train the models, next 20% select ridge vs recency and regularization, newest 20% test the selection. Errors describe points, not win rates or profit. Models are then refitted on available past games for the current forecasts.')
+        with st.expander('Free data attribution'):
+            st.write('Historical statistics and roster data: nflverse contributors, CC BY 4.0. Schedule data: Lee Sharpe / nflverse nfldata. Data are transformed into our own scoring totals and forecasts.')
+            st.link_button('nflverse data and license', 'https://github.com/nflverse/nflverse-data/blob/main/LICENSE.md')
+            st.link_button('NFL schedules and source', 'https://github.com/nflverse/nfldata')
     st.subheader('Forecast coverage')
     cols = st.columns(3)
     cols[0].metric('Eligible forecast rows', len(available))
@@ -178,7 +197,8 @@ def main(optimizer_class=None):
         st.error('No eligible current forecasts for this pool. No lineup can be generated.')
         return
     display = [c for c in ['player_name', 'player_id', 'position', 'team', 'opponent', 'game_date', 'salary', 'projection',
-                           'injury_status', 'ownership', 'game_total', 'implied_team_total', 'source', 'source_updated', 'fetched_at'] if c in available]
+                           'injury_status', 'ownership', 'game_total', 'implied_team_total', 'source', 'model_type', 'history_games',
+                           'last_played', 'training_last_game', 'source_updated', 'fetched_at'] if c in available]
     st.dataframe(available[display], hide_index=True)
     st.download_button('Download forecast audit', data.to_csv(index=False), 'forecast_audit.csv', 'text/csv')
     if 'source_url' in available:

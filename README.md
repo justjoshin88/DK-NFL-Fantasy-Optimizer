@@ -20,7 +20,7 @@ all Python dependencies. Keep `.streamlit/secrets.toml` outside git.
 1. Enter a DraftKings contest URL/ID and select NFL Classic or Showdown.
 2. Upload the exact contest player pool CSV. Optionally upload its blank roster
    template. Do not upload a roster-only file as the player pool.
-3. Public forecasts retrieve automatically for the pool's game dates. Review
+3. Free automatic forecasts retrieve for the pool's game dates. Review
    matching coverage, exclusions, source timestamps, injury flags and ownership
    availability. Unknown values are not replaced by averages or invented data.
 4. Set lineup count (1–20), diversity, exposure, athlete locks/exclusions and
@@ -36,11 +36,45 @@ unchanged. Started games are excluded; existing-entry late swaps are not support
 
 ## Data providers
 
+Default **Free automatic** needs no API key, paid scraper or subscription. It
+uses exact-game public forecasts when available, then fills missing coverage with
+**our own model estimates** from [nflverse](https://nflreadr.nflverse.com/).
+Downloads include current rosters, schedules and the previous/current season's
+player and team box scores. Downloads cache for one hour; projections for five
+minutes. A first load may take longer while those public files download.
+
+The model reconstructs DraftKings offense, kicker and DST points, including
+reception scoring and yardage bonuses. DST reconstruction uses team boxes and
+scoreboards; rare scoring attribution may differ from official contest totals.
+Features use at most six previous games: exponentially weighted score (0.7
+decay), last score, variability, recent volume, trend and time since playing.
+For each position, the oldest 60% of game dates train a recency baseline and
+ridge candidates (regularization 1, 10, 100). The next 20% select by MAE; the
+last 20% report untouched test MAE, RMSE, bias and interval coverage. The selected
+method refits on available history for future forecasts. Intervals use validation
+residuals. This is a tested free baseline, not evidence of superior contest profit.
+
+Identity requires a unique roster ID, exact normalized name/team/position,
+matching scheduled opponent/date/kickoff and active roster status. Generational
+name suffixes are normalized; fuzzy nicknames are not guessed. Players need at
+least three observed games and an appearance in the previous 21 days. Unsupported
+or unmatched players remain excluded. Estimates are conditional on playing;
+roster active status does not verify game-day injuries, starting role or workload.
+Published unavailable flags override the model. Ownership remains unknown.
+DraftKings `AvgPointsPerGame` is never substituted as a current forecast.
+
+Data attribution: [nflverse datasets](https://github.com/nflverse/nflverse-data),
+[CC BY 4.0](https://github.com/nflverse/nflverse-data/blob/main/LICENSE.md).
+This app transforms those data into scores, features and model estimates.
+Schedules: [nfldata](https://github.com/nflverse/nfldata/blob/master/data/games.csv).
+Public source availability and schema changes can interrupt retrieval; the app
+reports failure without inventing replacement records.
+
 Public source: [Daily Fantasy Fuel](https://www.dailyfantasyfuel.com/nfl/projections/draftkings/).
 Use exact game-date pages and match normalized name + team + position + opponent
 + date (DST by team). Source timestamps must be at most 24 hours old. The source
 may publish future-slate forecasts only closer to game day, may omit players or
-kickers, and can change its HTML format. No positive current forecast means no
+kickers, and can change its HTML format. In the Public forecasts-only mode, no positive current forecast means no
 eligible player. The app lists missing coverage instead of using historical
 `AvgPointsPerGame` from a DraftKings salary file.
 

@@ -66,7 +66,7 @@ class AppTests(unittest.TestCase):
     def test_streamlit_upload_and_solve(self):
         upload = io.StringIO(player_data().to_csv(index=False))
         upload.name = 'players.csv'
-        with patch('streamlit.file_uploader', return_value=upload):
+        with patch('streamlit.file_uploader', side_effect=lambda label, **kw: upload if label == 'Player pool CSV' else None):
             app = AppTest.from_file(APP_PATH).run()
             upload.seek(0)
             app.button[0].click().run()
@@ -77,7 +77,7 @@ class AppTests(unittest.TestCase):
     def test_streamlit_invalid_upload(self):
         upload = io.StringIO('player_name\nSomeone\n')
         upload.name = 'invalid.csv'
-        with patch('streamlit.file_uploader', return_value=upload):
+        with patch('streamlit.file_uploader', side_effect=lambda label, **kw: upload if label == 'Player pool CSV' else None):
             app = AppTest.from_file(APP_PATH).run()
         self.assertEqual(len(app.exception), 0)
         self.assertIn('Missing required columns', app.error[0].value)

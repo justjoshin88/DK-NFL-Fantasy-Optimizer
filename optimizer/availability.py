@@ -25,7 +25,7 @@ def depth_snapshot(frame, as_of):
 
 def player_availability(player_id, team, position, game, datasets, as_of, depth=None):
     audit = dict(depth_rank=np.nan, depth_updated='', injury_report_status='Unknown',
-                 injury_report_week=np.nan, availability_note='Game-day participation unverified')
+                 injury_report_week=np.nan, injury_report_updated='', availability_note='Game-day participation unverified')
     reason = ''
     if position != 'DST':
         matching = depth[(depth.gsis_id == player_id) & (depth.team == team) & (depth.pos_abb == position)] if depth is not None and not depth.empty else pd.DataFrame()

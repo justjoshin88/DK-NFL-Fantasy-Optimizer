@@ -40,12 +40,16 @@ Default **Free automatic** needs no API key, paid scraper or subscription. It
 uses exact-game public forecasts when available, then fills missing coverage with
 **our own model estimates** from [nflverse](https://nflreadr.nflverse.com/).
 Downloads include current rosters, timestamped depth charts, exact-week injury
-reports, schedules and up to four seasons of player/team box scores. Historical
-data and fitted models cache for one hour; forecast pages cache for five minutes.
-Refresh clears all three caches. A first load can take a few minutes; public file
+reports, schedules and up to four seasons of player/team box scores. History and fitted models cache for one hour and are shared by NFL season across
+player pools. Rosters, injuries, depth charts, schedules and forecast pages cache
+for five minutes. Cache entries are bounded to limit Community Cloud memory.
+Refresh projections updates current status/pages without discarding fitted models.
+Reload NFL history and retrain also downloads box scores and rebuilds validation.
+Every historical row contributes to the model cache fingerprint, preventing changes
+outside a sampled DataFrame hash from being missed. A first load can take a few minutes; public file
 downloads retry transient network/server failures. Later refreshes reuse fitted
-models until inputs change. Irrelevant player stat columns and old depth snapshots
-are discarded to control memory use on Streamlit Community Cloud.
+models until inputs change. Raw player stat columns, unused intermediate history columns and old depth snapshots
+are discarded; player groups and matchup context are cached to control memory use on Streamlit Community Cloud.
 
 The model reconstructs DraftKings offense, kicker and DST points, including
 reception scoring and yardage bonuses. DST reconstruction excludes opposing defensive TD/safety points from allowed
@@ -80,6 +84,12 @@ name suffixes are normalized; fuzzy nicknames are not guessed. Players need at
 least three observed games and an appearance in the previous 21 days. Unsupported
 or unmatched players remain excluded. Estimates are conditional on playing;
 roster active status does not verify game-day injuries, starting role or workload.
+Automatic snapshots expire after 15 minutes; published updates also must remain
+within 24 hours, and fitted models within two hours. Browser-session data are
+rechecked on use, and the download section rechecks expiry/game locks every 30
+seconds while the page is active. This clock check does not fetch new injury news. A current roster publisher update must be verified
+within 36 hours for own estimates. Recent workload from a different team is flagged
+for role review. These checks improve input reliability, not demonstrated live ROI.
 Published unavailable flags override the model. Fresh exact-week injury reports
 also exclude Out/Doubtful/inactive athletes and cannot be overwritten by a positive
 public forecast. A fresh complete depth snapshot excludes backup QB/K rows.
@@ -129,6 +139,26 @@ Contest metadata/ID checks use read-only public DraftKings endpoints. These may
 be unavailable or change without notice. If lookup fails, contest membership is
 explicitly unverified and the pool is used as supplied. A demonstrated ID mismatch
 blocks the workflow. Contest lookup does not authorize account access or entries.
+
+## Saved forecast scoring
+
+Download forecast audit **before kickoff**. After games are final, open **Check
+saved forecasts against actual results** and upload that CSV. The scorer matches
+historical GSIS IDs (DST by canonical team), exact opponent/date/kickoff and final
+NFL box scores, using the same DraftKings scoring rules. It reports observed-game
+MAE/RMSE/bias and exports a calibration-ready `scored_forecast_history.csv`.
+
+Pregame timestamps require timezones and must precede kickoff. Missing/after-kickoff
+records, excluded rows, wrong identities, unfinished games and absent player boxes
+remain unscored. CPT/FLEX rows are deduplicated as one athlete's **base** projection;
+conflicting base values stop scoring. Timestamps in uploaded files are user editable,
+so this does not independently prove as-published provenance. Box-derived final
+points may differ in rare scoring attribution from official contest scores.
+This is observed forecast evaluation, not a contest-payout or ROI evaluation.
+
+Uploaded projection files retain the same import timestamp on reruns so built
+rosters and downloads persist. Changing forecast contents invalidates old lineups;
+changing lineup count/strategy keeps manually retrieved forecast data available.
 
 ## Model and evidence
 
@@ -194,5 +224,5 @@ Includes exhaustive small-pool comparison for objective optimality, BOM and exac
 repeated roster headers, ID preservation, Classic two-game rules, CPT salary and
 scoring, duplicate-athlete exclusion, exposure rounding, exact source dates and
 teams, injury/lock exclusions, stale sources, malformed projections, wrong
-contest pools, chronological holdout, Streamlit upload/build/rerun behavior, matchup leakage, timestamp units, depth snapshot replacement, exact-week injury freshness, separate tuning/calibration/test boundaries, and correlated CPT outcome identity.
+contest pools, chronological holdout, Streamlit upload/build/rerun behavior, matchup leakage, timestamp units, depth snapshot replacement, exact-week injury freshness, separate tuning/calibration/test boundaries, correlated CPT outcome identity, cache reuse, freshness expiry, stable upload reruns, current schedule checks with cached models, and saved pregame snapshot scoring.
 Synthetic fixtures exist only in tests; the app ships no fake live projections.

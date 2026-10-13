@@ -9,9 +9,11 @@ import pulp
 try:
     from .dk_csv import CLASSIC, SHOWDOWN
     from .scenarios import sample_outcomes
+    from .freshness import automatic_stale
 except ImportError:
     from dk_csv import CLASSIC, SHOWDOWN
     from scenarios import sample_outcomes
+    from freshness import automatic_stale
 
 
 def eligible_pool(data, now=None):
@@ -20,6 +22,10 @@ def eligible_pool(data, now=None):
     data = pd.DataFrame(data).copy()
     if 'exclusion_reason' not in data:
         data['exclusion_reason'] = ''
+    for i, row in data.iterrows():
+        reason = automatic_stale(row, now)
+        if reason and not data.loc[i, 'exclusion_reason']:
+            data.loc[i, 'exclusion_reason'] = reason
     locked = pd.to_datetime(data.kickoff, utc=True) <= now
     data.loc[locked, 'exclusion_reason'] = 'Game has started; new lineups cannot add this player'
     invalid = ~np.isfinite(pd.to_numeric(data.projection, errors='coerce')) | (data.projection <= 0)
@@ -132,6 +138,8 @@ def build_portfolio(data, game_type='Classic', count=3, min_unique=2, max_exposu
     limit = int(np.floor(count * max_exposure))
     if limit < 1:
         raise ValueError(f'{count} lineups require at least {100 / count:.1f}% exposure for any athlete. Raise exposure or lineup count.')
+    if set(locked_keys).intersection(forbidden_keys):
+        raise ValueError('An athlete cannot be both locked and excluded.')
     if locked_keys and limit < count:
         raise ValueError('Locked players need 100% maximum exposure.')
     if strategy == 'GPP' and calibration is not None:
@@ -184,7 +192,9 @@ def scenario_portfolio(data, game_type, count, min_unique, exposure_limit, locks
         if iteration:
             objective = np.array([candidate_outcomes[row.player_key][iteration] for _, row in data.iterrows()])
         lineup = solve_lineup(data, game_type, objective, locked_keys=locks, forbidden_keys=bans, stack=True)
-        identity = tuple(zip(lineup.player_key, lineup.slot))
+        # Reordering equivalent RB/WR/FLEX slots is not a new candidate.
+        captain = tuple(lineup.loc[lineup.slot.eq('CPT'),'player_key'])
+        identity = (captain,tuple(sorted(lineup.player_key)))
         if identity not in keys_seen:
             keys_seen.add(identity)
             candidates.append(lineup)

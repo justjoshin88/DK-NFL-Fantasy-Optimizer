@@ -13,7 +13,8 @@ python -m unittest discover -s tests -v
 
 Streamlit Community Cloud: repository `justjoshin88/DK-NFL-Fantasy-Optimizer`,
 branch `main`, entrypoint `optimizer/optimizer.py`. Root requirements declare
-all Python dependencies. Keep `.streamlit/secrets.toml` outside git.
+all Python dependencies. Streamlit is pinned to the version validated in CI; the
+app displays a release marker so deployment reloads can be verified. Keep `.streamlit/secrets.toml` outside git.
 
 ## Workflow
 

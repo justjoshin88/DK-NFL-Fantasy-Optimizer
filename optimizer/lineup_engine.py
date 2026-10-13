@@ -8,13 +8,16 @@ import pulp
 
 try:
     from .dk_csv import CLASSIC, SHOWDOWN
+    from .scenarios import sample_outcomes
 except ImportError:
     from dk_csv import CLASSIC, SHOWDOWN
+    from scenarios import sample_outcomes
 
 
 def eligible_pool(data, now=None):
     now = now or datetime.now(timezone.utc)
-    data = data.copy()
+    # Forecast audit tables belong to the UI, not per-row solver operations.
+    data = pd.DataFrame(data).copy()
     if 'exclusion_reason' not in data:
         data['exclusion_reason'] = ''
     locked = pd.to_datetime(data.kickoff, utc=True) <= now
@@ -26,7 +29,7 @@ def eligible_pool(data, now=None):
 
 def solve_lineup(data, game_type='Classic', objective=None, previous=(), min_unique=1,
                  locked_keys=(), forbidden_keys=(), stack=False, time_limit=20):
-    data = data.reset_index(drop=True)
+    data = pd.DataFrame(data).reset_index(drop=True)
     slots = CLASSIC if game_type == 'Classic' else SHOWDOWN
     if game_type not in {'Classic', 'Showdown'}:
         raise ValueError('Only NFL Classic and Showdown are supported.')
@@ -50,9 +53,20 @@ def solve_lineup(data, game_type='Classic', objective=None, previous=(), min_uni
     problem += pulp.lpSum(int(data.loc[i, 'salary']) * v for (i, _), v in variables.items()) <= 50000
     for slot in range(len(slots)):
         problem += pulp.lpSum(v for (_, s), v in variables.items() if s == slot) == 1
+    # Build athlete sums once instead of repeatedly looking up every variable row.
+    athlete_variables = {}
+    by_game = {}
+    by_team = {}
+    keys = data.player_key.to_numpy()
+    games_for_row = data.game_id.to_numpy()
+    teams_for_row = data.team.to_numpy()
+    for (i, slot), variable in variables.items():
+        athlete_variables.setdefault(keys[i], []).append(variable)
+        by_game.setdefault(games_for_row[i], []).append(variable)
+        by_team.setdefault(teams_for_row[i], []).append(variable)
     by_player = {}
     for key in data.player_key.unique():
-        selection = pulp.lpSum(v for (i, _), v in variables.items() if data.loc[i, 'player_key'] == key)
+        selection = pulp.lpSum(athlete_variables.get(key, []))
         by_player[key] = selection
         problem += selection <= 1
         if key in locked_keys:
@@ -64,7 +78,7 @@ def solve_lineup(data, game_type='Classic', objective=None, previous=(), min_uni
         if len(games) < 2:
             raise ValueError('NFL Classic requires players from at least two NFL games.')
         for game in games:
-            problem += pulp.lpSum(v for (i, _), v in variables.items() if data.loc[i, 'game_id'] == game) <= 8
+            problem += pulp.lpSum(by_game.get(game, [])) <= 8
         if stack:
             for i, qb in data[data.position.eq('QB')].iterrows():
                 catches = [by_player[p.player_key] for _, p in data.iterrows()
@@ -74,7 +88,7 @@ def solve_lineup(data, game_type='Classic', objective=None, previous=(), min_uni
         if data.game_id.nunique() != 1 or data.team.nunique() != 2:
             raise ValueError('Showdown requires one game and players from both teams.')
         for team in data.team.unique():
-            problem += pulp.lpSum(v for (i, _), v in variables.items() if data.loc[i, 'team'] == team) <= 5
+            problem += pulp.lpSum(by_team.get(team, [])) <= 5
     for keys in previous:
         problem += pulp.lpSum(by_player[key] for key in keys if key in by_player) <= len(slots) - min_unique
     status = problem.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=time_limit, threads=1))
@@ -159,24 +173,23 @@ def scenario_portfolio(data, game_type, count, min_unique, exposure_limit, locks
     This approximates a diversification objective; it is not a payout/field model.
     Candidate and evaluation draws are independent to reduce selection overfitting.
     """
-    data = data.reset_index(drop=True)
+    data = pd.DataFrame(data).reset_index(drop=True)
     if not set(data.position).issubset(calibration):
         raise ValueError('Calibration must cover every eligible position.')
     rng = np.random.default_rng(seed)
     candidates, keys_seen = [], set()
+    candidate_outcomes = sample_outcomes(data, calibration, max(12, count * 3), rng)
     for iteration in range(max(12, count * 3)):
         objective = data.projection.to_numpy(dtype=float).copy()
         if iteration:
-            objective += np.array([rng.choice(calibration[row.position]['residuals']) for _, row in data.iterrows()])
+            objective = np.array([candidate_outcomes[row.player_key][iteration] for _, row in data.iterrows()])
         lineup = solve_lineup(data, game_type, objective, locked_keys=locks, forbidden_keys=bans, stack=True)
         identity = tuple(zip(lineup.player_key, lineup.slot))
         if identity not in keys_seen:
             keys_seen.add(identity)
             candidates.append(lineup)
     # Reuse the same underlying athlete outcome for CPT and FLEX rows.
-    outcomes = {}
-    for _, row in data.drop_duplicates('player_key').iterrows():
-        outcomes[row.player_key] = row.projection + rng.choice(calibration[row.position]['residuals'], 2000)
+    outcomes = sample_outcomes(data, calibration, 2000, rng)
     candidate_scores = [sum(outcomes[row.player_key] * (1.5 if row.slot == 'CPT' else 1)
                             for _, row in lineup.iterrows()) for lineup in candidates]
     selected, selected_keys, appearances = [], [], Counter()

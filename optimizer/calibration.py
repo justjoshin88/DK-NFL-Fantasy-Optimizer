@@ -1,6 +1,10 @@
 """Temporal holdout diagnostics, not a claim of verified profitability."""
 import numpy as np
 import pandas as pd
+try:
+    from .scenarios import sample_outcomes
+except ImportError:
+    from scenarios import sample_outcomes
 from datetime import datetime, timezone
 
 
@@ -44,17 +48,15 @@ def calibrate(history):
 
 
 def evaluate_portfolio(lineups, calibration, n_sims=2000, seed=88):
-    """Conditional independent-residual score distribution, never a win probability."""
+    """Conditional residual/correlation score distribution, never a win probability."""
     players = pd.concat(lineups).drop_duplicates('player_key').reset_index(drop=True)
     if not set(players.position).issubset(calibration):
         raise ValueError('Calibration does not cover every selected position.')
     rng = np.random.default_rng(seed)
-    scores = np.column_stack([row.projection + rng.choice(calibration[row.position]['residuals'], n_sims)
-                              for _, row in players.iterrows()])
-    index = dict(zip(players.player_key, range(len(players))))
+    outcomes = sample_outcomes(players, calibration, n_sims, rng)
     results = []
     for i, lineup in enumerate(lineups):
-        points = sum(scores[:, index[row.player_key]] * (1.5 if row.slot == 'CPT' else 1) for _, row in lineup.iterrows())
+        points = sum(outcomes[row.player_key] * (1.5 if row.slot == 'CPT' else 1) for _, row in lineup.iterrows())
         results.append(dict(lineup=i + 1, model_mean=float(points.mean()), model_p10=float(np.quantile(points, .1)),
                             model_p90=float(np.quantile(points, .9))))
     return pd.DataFrame(results)

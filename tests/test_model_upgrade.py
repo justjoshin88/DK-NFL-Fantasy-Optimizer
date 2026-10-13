@@ -10,6 +10,21 @@ from test_free_model import fixture
 
 
 class ModelUpgradeTests(unittest.TestCase):
+    def test_dst_safeties_excluded_but_conversion_returns_count_as_allowed(self):
+        from optimizer.free_model import defense_scores
+        from test_free_model import DEF_FIELDS
+        games=pd.DataFrame([dict(game_id='g',home_team='A',away_team='B',home_score=7,away_score=2)])
+        rows=[]
+        for team, opponent in [('A','B'),('B','A')]:
+            row=dict.fromkeys(DEF_FIELDS,0);row.update(team=team,opponent_team=opponent,game_id='g')
+            if team=='B':row['def_safeties']=1
+            rows.append(row)
+        scores=defense_scores(pd.DataFrame(rows),games).set_index('team')
+        self.assertEqual(scores.loc['A','dk_score'],10)  # Safety scored while A's offense was on field.
+        rows[1]['def_safeties']=0;rows[1]['def_2pt_made']=1
+        scores=defense_scores(pd.DataFrame(rows),games).set_index('team')
+        self.assertEqual(scores.loc['A','dk_score'],7)  # Conversion return is charged to A's DST.
+
     def test_depth_uses_complete_current_team_snapshot(self):
         now=pd.Timestamp('2026-10-13T12:00Z')
         frame=pd.DataFrame([dict(dt=stamp,team='LA',gsis_id=pid,pos_abb='QB',pos_rank=rank) for stamp,pid,rank in

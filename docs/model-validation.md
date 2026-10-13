@@ -8,7 +8,7 @@ calibration period supplies the intervals. See README for the exact procedure.
 
 | Position | Selected model | Test observations | RMSE | Baseline RMSE | Change | 80% interval coverage |
 |---|---|---:|---:|---:|---:|---:|
-| DST | ridge | 356 | 5.19 | 5.63 | 7.8% lower | 79.2% |
+| DST | ridge | 356 | 5.18 | 5.63 | 8.0% lower | 79.2% |
 | K | ridge | 339 | 4.88 | 5.15 | 5.1% lower | 70.8% |
 | QB | boosted_trees | 404 | 8.34 | 8.94 | 6.7% lower | 79.5% |
 | RB | ridge | 955 | 6.59 | 6.89 | 4.3% lower | 81.4% |

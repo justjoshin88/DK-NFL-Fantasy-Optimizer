@@ -145,17 +145,18 @@ def defense_scores(teams, games):
     if teams.duplicated(['game_id', 'team']).any():
         raise ProviderError('Duplicate team/game records in NFL stats.')
     merged = teams.merge(games[['game_id', 'home_team', 'home_score', 'away_score']], on='game_id', validate='many_to_one')
-    opponent = teams[['game_id', 'team', 'def_tds', 'def_2pt_made']].rename(
-        columns={'team': 'opponent_team', 'def_tds': 'opponent_def_tds', 'def_2pt_made': 'opponent_def_2pt'})
+    opponent = teams[['game_id', 'team', 'def_tds', 'def_safeties']].rename(
+        columns={'team': 'opponent_team', 'def_tds': 'opponent_def_tds', 'def_safeties': 'opponent_safeties'})
     merged = merged.merge(opponent, on=['game_id', 'opponent_team'], validate='one_to_one')
-    numeric = required[3:] + ['opponent_def_tds', 'opponent_def_2pt', 'home_score', 'away_score']
+    numeric = required[3:] + ['opponent_def_tds', 'opponent_safeties', 'home_score', 'away_score']
     for col in numeric:
         merged[col] = pd.to_numeric(merged[col], errors='raise')
     merged = merged.dropna(subset=['home_score', 'away_score'])
     allowed = np.where(merged.team.eq(merged.home_team), merged.away_score, merged.home_score)
-    # Defensive TD points and defensive 2pt returns are not points allowed by DST.
-    # The extra point following a defensive TD remains counted by DK's rule.
-    allowed = allowed - 6*merged.opponent_def_tds - 2*merged.opponent_def_2pt
+    # Opposing defensive TDs and safeties are scored against our offense.
+    # Conversion/extra-point returns and PATs do count as DST points allowed.
+    # Official NFL Classic scoring notes: https://www.draftkings.com/help/rules/1
+    allowed = allowed - 6*merged.opponent_def_tds - 2*merged.opponent_safeties
     tier = np.select([allowed == 0, allowed <= 6, allowed <= 13, allowed <= 20,
                       allowed <= 27, allowed <= 34], [10, 7, 4, 1, 0, -1], default=-4)
     merged['dk_score'] = (merged.def_sacks + 2*(merged.def_interceptions + merged.fumble_recovery_opp)

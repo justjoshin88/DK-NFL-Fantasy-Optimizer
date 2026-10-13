@@ -48,8 +48,8 @@ models until inputs change. Irrelevant player stat columns and old depth snapsho
 are discarded to control memory use on Streamlit Community Cloud.
 
 The model reconstructs DraftKings offense, kicker and DST points, including
-reception scoring and yardage bonuses. DST reconstruction uses team boxes and
-scoreboards; rare scoring attribution may differ from official contest totals.
+reception scoring and yardage bonuses. DST reconstruction excludes opposing defensive TD/safety points from allowed
+points, counts conversion returns and extra points, and uses team boxes/scoreboards; rare scoring attribution may differ from official contest totals.
 Player features use at most six prior games: exponentially weighted points (0.7
 decay), carries, targets, passing/rushing/receiving yards, touchdowns, recent
 volume, trends and team workload shares. Matchup features use only prior completed

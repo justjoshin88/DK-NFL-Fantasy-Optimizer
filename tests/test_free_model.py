@@ -24,13 +24,13 @@ def fixture():
     athletes = [('QB',i) for i in range(4)] + [('RB',i) for i in range(4)] + [('WR',i) for i in range(5)] + [('TE',i) for i in range(2)] + [('K',i) for i in range(2)]
     for position, i in athletes:
         roster.append(dict(full_name=f'{position} Player {i}', team='A' if i%2 else 'B', position=position, status='ACT', gsis_id=f'{position}{i}'))
-    for day in range(61):
+    for day in range(101):
         kickoff = start + pd.Timedelta(days=day)
         game_id = f'game-{day}'
         games.append(dict(game_id=game_id, gameday=str(kickoff.date()), gametime='13:00', away_team='A', home_team='B',
-                          season=2025, week=day+1, game_type='REG', away_score=24 if day<60 else np.nan,
-                          home_score=20 if day<60 else np.nan))
-        if day == 60:
+                          season=2025, week=day+1, game_type='REG', away_score=24 if day<100 else np.nan,
+                          home_score=20 if day<100 else np.nan))
+        if day == 100:
             continue
         for position, i in athletes:
             row = dict.fromkeys(STAT_FIELDS,0)
@@ -45,7 +45,7 @@ def fixture():
             row = dict.fromkeys(DEF_FIELDS,0)
             row.update(team=team, opponent_team=opponent, game_id=game_id, season_type='REG', season=2025, def_sacks=2)
             teams.append(row)
-    target = start + pd.Timedelta(days=60)
+    target = start + pd.Timedelta(days=100)
     pool = pd.DataFrame([dict(player_name=r['full_name'],position=r['position'],team=r['team'],opponent='B' if r['team']=='A' else 'A',
                              player_key=f'{r["gsis_id"]}:{r["team"]}',player_id=str(100+i), game_date=str(target.date()),
                              kickoff=target.isoformat(), game_id='A@B:'+str(target.date()), salary=4000,
@@ -94,9 +94,9 @@ class FreeModelTests(unittest.TestCase):
     def test_future_outcomes_do_not_enter_features_or_forecasts(self):
         pool,data,as_of=fixture()
         first,_,_,_=generate_forecasts(pool,data,as_of)
-        future=data['players'].iloc[0].copy();future['game_id']='game-60';future['passing_yards']=99999
+        future=data['players'].iloc[0].copy();future['game_id']='game-100';future['passing_yards']=99999
         data['players']=pd.concat([data['players'],pd.DataFrame([future])],ignore_index=True)
-        data['games'].loc[data['games'].game_id.eq('game-60'),['home_score','away_score']]=[60,60]
+        data['games'].loc[data['games'].game_id.eq('game-100'),['home_score','away_score']]=[60,60]
         second,_,_,_=generate_forecasts(pool,data,as_of)
         np.testing.assert_allclose(first.projection,second.projection)
 

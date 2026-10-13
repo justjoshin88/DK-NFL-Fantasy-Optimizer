@@ -39,20 +39,40 @@ unchanged. Started games are excluded; existing-entry late swaps are not support
 Default **Free automatic** needs no API key, paid scraper or subscription. It
 uses exact-game public forecasts when available, then fills missing coverage with
 **our own model estimates** from [nflverse](https://nflreadr.nflverse.com/).
-Downloads include current rosters, schedules and the previous/current season's
-player and team box scores. Downloads cache for one hour; projections for five
-minutes. A first load may take longer while those public files download.
+Downloads include current rosters, timestamped depth charts, exact-week injury
+reports, schedules and up to four seasons of player/team box scores. Historical
+data and fitted models cache for one hour; forecast pages cache for five minutes.
+Refresh clears all three caches. A first load can take a few minutes; public file
+downloads retry transient network/server failures. Later refreshes reuse fitted
+models until inputs change. Irrelevant player stat columns and old depth snapshots
+are discarded to control memory use on Streamlit Community Cloud.
 
 The model reconstructs DraftKings offense, kicker and DST points, including
 reception scoring and yardage bonuses. DST reconstruction uses team boxes and
 scoreboards; rare scoring attribution may differ from official contest totals.
-Features use at most six previous games: exponentially weighted score (0.7
-decay), last score, variability, recent volume, trend and time since playing.
-For each position, the oldest 60% of game dates train a recency baseline and
-ridge candidates (regularization 1, 10, 100). The next 20% select by MAE; the
-last 20% report untouched test MAE, RMSE, bias and interval coverage. The selected
-method refits on available history for future forecasts. Intervals use validation
-residuals. This is a tested free baseline, not evidence of superior contest profit.
+Player features use at most six prior games: exponentially weighted points (0.7
+decay), carries, targets, passing/rushing/receiving yards, touchdowns, recent
+volume, trends and team workload shares. Matchup features use only prior completed
+games for team offense, points allowed by position, rest and observed home venue
+roof. Target-game final weather, closing odds and roof decisions are excluded
+because their pregame availability is not archived. Historical timestamps are
+explicitly converted to nanoseconds before cutoff comparisons across pandas versions.
+
+The oldest 50% of game dates provide initial training. Three expanding validation
+blocks over the next 20% compare the recency baseline, ridge (6 or 22 features,
+regularization 10/100) and shallow gradient boosted trees (7/15 leaves). Selection
+uses RMSE, which targets the conditional mean used by expected-points optimization.
+A separate 10% calibrates score-dependent error intervals and correlations; the
+final 20% evaluates frozen fitted models and intervals. The selected model then
+refits on available past outcomes for deployment. Test predictions and validation
+comparisons can be downloaded. Metrics include baseline errors, high-volume player
+errors, bias, interval coverage and game-date bootstrap uncertainty in error gains.
+
+These are **historical reconstructions**, not saved as-published pregame forecasts.
+The underlying boxes may contain later stat corrections, and players without a
+statistical appearance are incompletely observed. Neither current injury/depth
+filters nor cold-start exclusions have been proven to improve live contest ROI.
+Improvement on a limited historical test does not establish superior contest profit.
 
 Identity requires a unique roster ID, exact normalized name/team/position,
 matching scheduled opponent/date/kickoff and active roster status. Generational
@@ -60,7 +80,12 @@ name suffixes are normalized; fuzzy nicknames are not guessed. Players need at
 least three observed games and an appearance in the previous 21 days. Unsupported
 or unmatched players remain excluded. Estimates are conditional on playing;
 roster active status does not verify game-day injuries, starting role or workload.
-Published unavailable flags override the model. Ownership remains unknown.
+Published unavailable flags override the model. Fresh exact-week injury reports
+also exclude Out/Doubtful/inactive athletes and cannot be overwritten by a positive
+public forecast. A fresh complete depth snapshot excludes backup QB/K rows.
+Questionable reports remain visible without an arbitrary point deduction. Old,
+future-dated, wrong-week or absent reports do not verify health or participation.
+Depth chart ranks do not guarantee final starters. Ownership remains unknown.
 DraftKings `AvgPointsPerGame` is never substituted as a current forecast.
 
 Data attribution: [nflverse datasets](https://github.com/nflverse/nflverse-data),
@@ -113,13 +138,23 @@ must have proven optimal solver status for its given objective. Later lineups
 also obey diversity and exposure constraints; the portfolio is a sequential
 heuristic, not a jointly proven optimum.
 
-GPP uses QB/pass-catcher stacks in Classic and athlete diversity. Without a
-historical archive, it uses fully supplied ceilings or mean projections; no
-arbitrary volatility or win probability is invented. With a supported archive,
-it creates scenario-optimized candidates using empirical position forecast errors
-and selects candidates greedily by sampled expected best portfolio score. Candidate
-and evaluation draws are separate. This is a diversification model, not a complete
-payout or opponent-field model.
+GPP uses QB/pass-catcher stacks in Classic and athlete diversity. When every
+eligible forecast comes from our free model, its separate calibration errors
+provide automatic scenarios without another CSV upload. Same-team and opposing-team
+rank-error correlations are estimated by projected role (QB1, RB1/2, WR1/2/3,
+TE1, K1, DST1) with at least 30 observed pairs. Pair correlations shrink toward
+independence using 100 prior observations. A Gaussian copula maps correlated
+uniform draws to empirical residual quantiles; each matrix is repaired to be
+positive definite. Unknown roles/pairs stay independent. CPT/FLEX rows share one
+athlete outcome, and candidate/evaluation draws are separate. This approximation
+omits unexpected role changes, correlated injury events and actual opponent fields.
+
+Mixed expert/model coverage does not silently reuse our model's residuals for
+expert predictions. A user archive remains an independent-residual alternative. If neither source of
+empirical errors is usable, GPP uses fully supplied ceilings or mean projections.
+With usable errors, it creates scenario-optimized candidates and selects them
+greedily by sampled expected best portfolio score. This is a diversification
+model, not a complete payout or opponent-field model.
 
 Historical archive: `game_date,position,projection,actual`, saved pregame
 forecasts and final DraftKings points; optional `forecast_at` (must precede game
@@ -138,10 +173,20 @@ structures and entry fees. Those are not inferred from a salary CSV or silently
 manufactured by this app. Provider availability and input quality limit results.
 
 Primary rules and methodological context:
+- https://nflreadr.nflverse.com/articles/nflverse_data_schedule.html
+- https://nflreadr.nflverse.com/reference/load_depth_charts.html
+- https://nflreadr.nflverse.com/reference/load_injuries.html
+- Mahoney and Paniak, Method and Validation for Optimal Lineup Creation for Daily
+  Fantasy Football Using Machine Learning and Linear Programming,
+  https://arxiv.org/abs/2309.15253
+  (supports comparative forecasting/optimization validation; does not establish
+  that this app or a neural network is a universally superior method).
 - https://www.draftkings.com/help/rules/1
 - https://www.draftkings.com/help/rules/1/96
 - Haugh and Singal, How to Play Fantasy Sports Strategically (and Win),
   https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3393127
+
+Latest measured comparison and timing: [model validation snapshot](docs/model-validation.md).
 
 ## Tests
 
@@ -149,5 +194,5 @@ Includes exhaustive small-pool comparison for objective optimality, BOM and exac
 repeated roster headers, ID preservation, Classic two-game rules, CPT salary and
 scoring, duplicate-athlete exclusion, exposure rounding, exact source dates and
 teams, injury/lock exclusions, stale sources, malformed projections, wrong
-contest pools, chronological holdout, and Streamlit upload/build/rerun behavior.
+contest pools, chronological holdout, Streamlit upload/build/rerun behavior, matchup leakage, timestamp units, depth snapshot replacement, exact-week injury freshness, separate tuning/calibration/test boundaries, and correlated CPT outcome identity.
 Synthetic fixtures exist only in tests; the app ships no fake live projections.

@@ -12,13 +12,13 @@ if __package__:
     from .providers import fetch_public, fetch_sportsdata, match_projections, fetch_contest, verify_contest_pool, load_projection_file, ProviderError
     from .lineup_engine import eligible_pool, build_portfolio
     from .calibration import calibrate, evaluate_portfolio
-    from .free_model import fetch_free, load_datasets
+    from .free_model import fetch_free, load_datasets, prepare_model
 else:
     from dk_csv import load_pool, read_text, export_rosters, roster_template
     from providers import fetch_public, fetch_sportsdata, match_projections, fetch_contest, verify_contest_pool, load_projection_file, ProviderError
     from lineup_engine import eligible_pool, build_portfolio
     from calibration import calibrate, evaluate_portfolio
-    from free_model import fetch_free, load_datasets
+    from free_model import fetch_free, load_datasets, prepare_model
 
 
 def setting(name, default=''):
@@ -31,7 +31,8 @@ def setting(name, default=''):
 @st.cache_data(ttl=300, show_spinner=False)
 def automatic_data(pool, provider, key_fingerprint='', _key='', production=False):
     if provider == 'Free automatic':
-        return fetch_free(pool, datasets=free_datasets(pool))
+        datasets = free_datasets(pool)
+        return fetch_free(pool, datasets=datasets, artifacts=free_model_artifacts({k: datasets[k] for k in ['players', 'teams', 'games']}))
     if provider == 'SportsDataIO':
         if not _key:
             raise ProviderError('SPORTSDATAIO_API_KEY is not configured. Use public forecasts or configure a licensed real-data feed in Streamlit Secrets.')
@@ -44,6 +45,11 @@ def automatic_data(pool, provider, key_fingerprint='', _key='', production=False
 @st.cache_data(ttl=3600, show_spinner=False)
 def free_datasets(pool):
     return load_datasets(pool)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def free_model_artifacts(datasets):
+    return prepare_model(datasets)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -92,7 +98,7 @@ def main(optimizer_class=None):
     template = st.file_uploader('Blank DraftKings roster template (optional)', type=['csv'])
     projections = st.file_uploader('Projection file (for Upload projections)', type=['csv']) if provider == 'Upload projections' else None
     with st.expander('Model controls and historical validation'):
-        st.write('Cash maximizes forecast points. GPP uses QB stacks and lineup diversity. With a historical forecast archive, scenario candidates use empirical residuals; without it, no uncertainty or win rate is invented.')
+        st.write('Cash maximizes forecast points. GPP uses QB stacks and lineup diversity. Our free model supplies historical error scenarios and estimated game correlations. Uploaded historical forecast archives can supply independent error scenarios. These describe score diversification; contest payouts and winning odds are not estimated.')
         min_unique = st.number_input('Minimum different athletes between lineups', 1, 6 if game_type == 'Showdown' else 9, 2)
         max_exposure = st.slider('Maximum athlete exposure (%)', 10, 100, 100, 5)
         history = st.file_uploader('Historical pregame projections and final DK scores (optional)', type=['csv'])
@@ -144,6 +150,8 @@ def main(optimizer_class=None):
     refresh = st.button('Refresh projections')
     if refresh:
         automatic_data.clear()
+        free_datasets.clear()
+        free_model_artifacts.clear()
         st.session_state.pop('portfolio', None)
     try:
         if provider == 'Upload projections':
@@ -178,8 +186,13 @@ def main(optimizer_class=None):
     if 'free_model_metrics' in data.attrs:
         st.warning(data.attrs['free_model_notes'])
         with st.expander('Free model: untouched chronological test results'):
-            st.dataframe(data.attrs['free_model_metrics'], hide_index=True)
-            st.caption('Older 60% of dates train the models, next 20% select ridge vs recency and regularization, newest 20% test the selection. Errors describe points, not win rates or profit. Models are then refitted on available past games for the current forecasts.')
+            st.dataframe(pd.DataFrame(data.attrs['free_model_metrics']), hide_index=True)
+            st.caption('Initial 50% of dates train candidates; the next 20% use three expanding validation blocks to select recency, ridge or boosted trees by RMSE. Separate 10% calibrates intervals and correlations; final 20% tests frozen models. Historical data may include later stat corrections, and absent player boxes are not fully observed participation outcomes. These diagnostics are not live archived forecast accuracy or contest profit.')
+            st.download_button('Download test predictions', data.attrs['free_model_test_predictions'].to_csv(index=False), 'model_test_predictions.csv', 'text/csv')
+            st.download_button('Download validation comparisons', data.attrs['free_model_folds'].to_csv(index=False), 'model_validation_folds.csv', 'text/csv')
+        with st.expander('Game correlation estimates'):
+            st.dataframe(data.attrs['free_model_dependence'], hide_index=True)
+            st.caption('Calibration-period rank correlations by same-team/opposing-team projected role. At least 30 pairs; estimates shrink toward independence and matrices are repaired for numerical validity. This approximate copula omits unexpected lineup changes and shared injury events.')
         with st.expander('Free data attribution'):
             st.write('Historical statistics and roster data: nflverse contributors, CC BY 4.0. Schedule data: Lee Sharpe / nflverse nfldata. Data are transformed into our own scoring totals and forecasts.')
             st.link_button('nflverse data and license', 'https://github.com/nflverse/nflverse-data/blob/main/LICENSE.md')
@@ -198,7 +211,8 @@ def main(optimizer_class=None):
         return
     display = [c for c in ['player_name', 'player_id', 'position', 'team', 'opponent', 'game_date', 'salary', 'projection',
                            'injury_status', 'ownership', 'game_total', 'implied_team_total', 'source', 'model_type', 'history_games',
-                           'last_played', 'training_last_game', 'source_updated', 'fetched_at'] if c in available]
+                           'last_played', 'recent_opportunities', 'depth_rank', 'depth_updated', 'injury_report_status',
+                           'availability_note', 'training_last_game', 'model_built_at', 'source_updated', 'fetched_at'] if c in available]
     st.dataframe(available[display], hide_index=True)
     st.download_button('Download forecast audit', data.to_csv(index=False), 'forecast_audit.csv', 'text/csv')
     if 'source_url' in available:
@@ -206,13 +220,16 @@ def main(optimizer_class=None):
             for url in available.source_url.dropna().unique():
                 st.write(url)
     calibration = None
+    if 'free_model_calibration' in data.attrs and available.source.eq('Our free nflverse model').all():
+        calibration = data.attrs['free_model_calibration']
+        st.caption('Free model scenarios use separate historical calibration errors with estimated game correlations. Scores remain conditional on playing.')
     if history is not None:
         try:
             calibration, metrics = calibrate(pd.read_csv(io.StringIO(read_text(history))))
             if not set(available.position).issubset(calibration):
                 raise ValueError('Historical calibration does not cover every eligible position.')
             st.dataframe(metrics, hide_index=True)
-            st.caption('Holdout diagnostics describe historical forecast errors. Simulations assume independent position residuals; game correlations, ownership, and payouts are not calibrated.')
+            st.caption('Holdout diagnostics describe historical forecast errors. Uploaded archives use independent position residuals; ownership and payouts are not calibrated.')
         except (ValueError, TypeError, KeyError) as exc:
             st.error(str(exc))
             return
@@ -253,5 +270,6 @@ def main(optimizer_class=None):
             st.dataframe(exposure.reset_index(drop=True), hide_index=True)
         if calibration is not None:
             st.dataframe(evaluate_portfolio(lineups, calibration), hide_index=True)
+            st.caption('Simulated score ranges describe the fitted scenario model, not a chance of winning or an expected payout.')
         st.download_button('Download DraftKings roster CSV', export_rosters(lineups, game_type, template), 'DK_rosters.csv', 'text/csv')
         st.caption('ID-only roster upload in the exact position order. This is not an entry-edit CSV and does not submit or pay for entries.')

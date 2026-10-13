@@ -93,53 +93,11 @@ class NFLOptimizer:
 
 
 def main():
-    import streamlit as st
-
-    # Streamlit executes this file directly; support package imports as well.
     if __package__:
-        from .data_loader import DataLoader
-        from .strategy_manager import Strategy, StrategyManager
+        from .streamlit_ui import main as render_app
     else:
-        from data_loader import DataLoader
-        from strategy_manager import Strategy, StrategyManager
-
-    st.set_page_config(page_title="DK NFL Fantasy Optimizer", layout="wide")
-    st.title("DK NFL Fantasy Optimizer")
-    st.write("Upload your NFL Classic salaries and projections to build a $50,000 lineup.")
-    st.caption("Classic roster: QB, 2 RB, 3 WR, TE, FLEX, DST. Showdown is not supported.")
-    with st.expander("Required file columns"):
-        st.write("player_name, position, salary, projection, team, opponent")
-        st.write("Optional: projection_floor, projection_ceiling, ownership (percent). "
-                 "DraftKings salary files need projections added before uploading.")
-    upload = st.file_uploader("Player data", type=["csv", "json"])
-    strategy = st.selectbox("Strategy", ["Cash", "GPP"])
-    if upload is None:
-        st.info("Upload a CSV or JSON file to begin.")
-        return
-    try:
-        loader = DataLoader()
-        data = loader.normalize_positions(loader.load_data(upload)).reset_index(drop=True)
-    except (ValueError, TypeError, OSError) as exc:
-        st.error(str(exc))
-        return
-    st.dataframe(data, hide_index=True)
-    if st.button("Build lineup", type="primary"):
-        manager = StrategyManager(Strategy.GPP if strategy == "GPP" else Strategy.CASH)
-        if strategy == "GPP" and "ownership" not in data.columns:
-            st.warning("No ownership column provided. The ownership cap will not be applied.")
-        try:
-            with st.spinner("Optimizing lineup..."):
-                optimizer = NFLOptimizer(data)
-                model, variables = optimizer.build_model(manager.get_objective_column(data.columns), manager)
-                lineup = optimizer.data.loc[optimizer.solve(model, variables)].copy()
-        except Exception as exc:
-            st.error(f"Unable to build a lineup: {exc}. Check roster coverage, salaries, and strategy constraints.")
-            return
-        st.success("Lineup built successfully")
-        st.metric("Total salary", f"${lineup['salary'].sum():,.0f}")
-        st.metric("Projected points", f"{lineup['projection'].sum():.2f}")
-        st.dataframe(lineup, hide_index=True)
-        st.download_button("Download lineup CSV", lineup.to_csv(index=False), "lineup.csv", "text/csv")
+        from streamlit_ui import main as render_app
+    render_app(NFLOptimizer)
 
 
 if __name__ == "__main__":

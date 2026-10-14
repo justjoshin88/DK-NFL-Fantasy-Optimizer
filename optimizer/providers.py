@@ -34,7 +34,10 @@ def request(url, *, key=None, expect_json=False):
             raise ProviderError('Provider response exceeds the allowed size.')
         return response.json() if expect_json else response.text
     except (requests.RequestException, ValueError) as exc:
-        raise ProviderError('Provider is unavailable, returned invalid data, or rejected access. No forecasts were substituted.') from exc
+        response = getattr(exc, 'response', None)
+        detail = f'HTTP {response.status_code}' if response is not None else type(exc).__name__
+        # Report host and status only; never echo query parameters or credentials.
+        raise ProviderError(f'{urlparse(url).hostname} request failed ({detail}). The source could not be verified.') from exc
 
 
 def numeric(value):
@@ -212,10 +215,13 @@ def contest_id(value):
 def fetch_contest(value):
     cid = contest_id(value)
     payload = request(f'https://api.draftkings.com/contests/v1/contests/{cid}?format=json', expect_json=True)
+    if not isinstance(payload, dict):
+        raise ProviderError('Unexpected DraftKings contest response: expected an object.')
     contest = payload.get('contestDetail') or payload.get('contest') or payload
     if not isinstance(contest, dict):
         raise ProviderError('Unexpected DraftKings contest response.')
-    draft_group = contest.get('draftGroupId') or contest.get('draftGroup', {}).get('draftGroupId')
+    nested_group = contest.get('draftGroup')
+    draft_group = contest.get('draftGroupId') or (nested_group.get('draftGroupId') if isinstance(nested_group, dict) else None)
     if draft_group is None:
         raise ProviderError('DraftKings did not return a verifiable draft group for this contest.')
     return dict(contest_id=cid, name=contest.get('name') or contest.get('contestName') or f'Contest {cid}',

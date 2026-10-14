@@ -92,7 +92,7 @@ class NFLOptimizer:
         return selected_indices
 
 
-APP_RELEASE = '2026.10.13.3'
+APP_RELEASE = '2026.10.14.1'
 
 def main():
     import streamlit as st
@@ -100,7 +100,7 @@ def main():
         from .streamlit_ui import main as render_app
     else:
         from streamlit_ui import main as render_app
-    render_app(NFLOptimizer)
+    render_app(NFLOptimizer, release=APP_RELEASE)
     st.caption(f'App release {APP_RELEASE}')
 
 

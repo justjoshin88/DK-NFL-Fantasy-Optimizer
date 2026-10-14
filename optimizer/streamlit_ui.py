@@ -1,6 +1,7 @@
 """Contest → exact DK pool → automatic data retrieval → review → legal roster export."""
 import hashlib
 import io
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -8,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 if __package__:
+    from .accountability import evidence_report
     from .dk_csv import load_pool, read_text, export_rosters, roster_template
     from .providers import fetch_public, fetch_sportsdata, match_projections, fetch_contest, verify_contest_pool, load_projection_file, ProviderError
     from .lineup_engine import eligible_pool, build_portfolio
@@ -16,6 +18,7 @@ if __package__:
     from .freshness import frame_revision, portfolio_is_current
     from .free_model import fetch_free, load_history, load_status, combine_datasets, pool_season, prepare_model, schedule_times
 else:
+    from accountability import evidence_report
     from dk_csv import load_pool, read_text, export_rosters, roster_template
     from providers import fetch_public, fetch_sportsdata, match_projections, fetch_contest, verify_contest_pool, load_projection_file, ProviderError
     from lineup_engine import eligible_pool, build_portfolio
@@ -130,7 +133,7 @@ def legacy_workflow(upload, strategy, optimizer_class):
         st.download_button('Download lineup summary', lineup.to_csv(index=False), 'lineup_summary.csv', 'text/csv')
 
 
-def main(optimizer_class=None):
+def main(optimizer_class=None, release='development'):
     st.set_page_config(page_title='DK NFL Fantasy Optimizer', layout='wide')
     st.title('DK NFL Fantasy Optimizer')
     st.write('Choose your contest and NFL game type, upload its player pool, and retrieve matching pregame projections automatically.')
@@ -191,11 +194,13 @@ def main(optimizer_class=None):
     cols[1].metric('Games', pool.game_id.nunique())
     cols[2].metric('Salary cap', '$50,000')
     st.caption('Game dates: ' + ', '.join(sorted(pool.game_date.unique())))
+    contest_verified = False
     if contest:
         try:
             with st.spinner('Checking the contest and player IDs...'):
                 metadata = contest_context(contest, pool)
             st.success(f'Contest verified: {metadata["name"]} — all pool IDs belong to its draft group.')
+            contest_verified = True
             st.write({k: v for k, v in metadata.items() if k != 'raw' and v is not None})
         except ProviderError as exc:
             st.warning(f'Contest verification unavailable: {exc} The uploaded pool is used as supplied. Confirm it is the exact contest export.')
@@ -242,9 +247,16 @@ def main(optimizer_class=None):
         else:
             st.info('Enable automatic retrieval or click Refresh projections to load forecasts.')
             return
-    except (ProviderError, ValueError, KeyError) as exc:
+    except ProviderError as exc:
         st.error(str(exc))
-        st.info('Future slate forecasts may not be published yet. Try again closer to kickoff, or use a licensed feed/current projection file. The app will not use another week or substitute season averages.')
+        st.info('A source or validated-data requirement could not be satisfied. Review the specific reason above, refresh, or upload current projections for this exact pool. No other week or season averages are substituted.')
+        return
+    except (ValueError, KeyError, TypeError) as exc:
+        logging.exception('Forecast processing failed')
+        st.session_state.pop('portfolio', None)
+        st.error('Forecast processing failed. Lineup generation is blocked; this is not evidence that future projections are unpublished.')
+        st.code(f'{type(exc).__name__}: {exc}')
+        st.info('The full traceback is recorded in the app logs for diagnosis.')
         return
     # A new forecast/upload must invalidate older exports, even on a cache refresh.
     forecast_digest = hashlib.sha256(data.to_csv(index=False).encode()).hexdigest()
@@ -274,6 +286,13 @@ def main(optimizer_class=None):
             st.link_button('nflverse data and license', 'https://github.com/nflverse/nflverse-data/blob/main/LICENSE.md')
             st.link_button('NFL schedules and source', 'https://github.com/nflverse/nfldata')
     st.subheader('Forecast coverage')
+    with st.expander('Forecast accountability: evidence and equations'):
+        evidence, coverage = evidence_report(data, available, pool_sha256=digest,
+                                             contest=contest, contest_verified=contest_verified, release=release)
+        st.dataframe(coverage, hide_index=True)
+        st.caption('Counts use distinct athletes, so Showdown CPT/FLEX rows do not inflate coverage. Coverage is not accuracy. Unknown injury status does not mean healthy.')
+        st.write('MAE = mean absolute error. RMSE = square root of mean squared error. Bias = mean(actual − projection). Accuracy is measured against observed game results, never guaranteed by an equation.')
+        st.download_button('Download evidence and equations', evidence, 'forecast_evidence.json', 'application/json')
     cols = st.columns(3)
     cols[0].metric('Eligible forecast rows', len(available))
     cols[1].metric('Excluded rows', len(excluded))

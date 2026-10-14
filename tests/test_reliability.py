@@ -1,4 +1,6 @@
 import io
+import json
+import hashlib
 import sys
 import importlib
 import unittest
@@ -12,6 +14,8 @@ from optimizer.freshness import frame_revision,automatic_stale,portfolio_is_curr
 from optimizer.free_model import (prepare_history,generate_forecasts,fetch_free,pool_season,schedule_times,load_status,ProviderError)
 from optimizer.forecast_features import MatchupContext
 from optimizer.forecast_audit import score_snapshot
+from optimizer.accountability import evidence_report
+from optimizer.providers import fetch_contest
 from optimizer.lineup_engine import eligible_pool,solve_lineup,build_portfolio
 from test_free_model import fixture
 from test_draftkings import classic_pool,classic_csv
@@ -33,6 +37,57 @@ def artifacts(data,as_of):
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_public_model_merge_preserves_list_eligibility_and_pool_fields(self):
+        for showdown in [False, True]:
+            with self.subTest(showdown=showdown):
+                pool,data,as_of=fixture()
+                if showdown:
+                    captain=pool.copy()
+                    pool['eligible_slots']=[['FLEX'] for _ in range(len(pool))]
+                    captain['eligible_slots']=[['CPT'] for _ in range(len(captain))]
+                    captain['salary']=captain.salary*3//2
+                    captain['player_id']=captain.player_id+'9'
+                    pool=pd.concat([pool,captain],ignore_index=True)
+                p=pool.iloc[4]
+                public=pd.DataFrame([dict(player_name=p.player_name,position=p.position,team=p.team,
+                                         opponent=p.opponent,game_date=p.game_date,projection=21.,
+                                         injury_status='',source='Daily Fantasy Fuel')])
+                with patch('optimizer.free_model.fetch_public',return_value=(public,[])):
+                    result,_=fetch_free(pool,data,as_of,artifacts(data,as_of))
+                pd.testing.assert_frame_equal(result[pool.columns],pool)
+                chosen=result[result.player_key.eq(p.player_key)]
+                self.assertTrue(chosen.projection.eq(21.).all())
+                self.assertTrue(chosen.projection_std.isna().all())
+                self.assertTrue(chosen.historical_player_id.notna().all())
+
+    def test_evidence_hash_matches_export_and_unknown_is_not_healthy(self):
+        pool=classic_pool();pool['source']='User upload'
+        pool['injury_report_status']='Unknown'
+        duplicate=pool.iloc[[0]].copy();duplicate['player_id']='9999'
+        pool=pd.concat([pool,duplicate],ignore_index=True)
+        encoded,coverage=evidence_report(pool,pool,pool_sha256='pool-hash',contest='123',
+                                        contest_verified=False,release='test')
+        report=json.loads(encoded)
+        self.assertFalse(report['contest']['membership_verified'])
+        self.assertEqual(report['forecast_csv_sha256'],hashlib.sha256(pool.to_csv(index=False).encode()).hexdigest())
+        self.assertEqual(coverage.pool_athletes.sum(),pool.player_key.nunique())
+        self.assertEqual(coverage.injury_report_unknown.sum(),pool.player_key.nunique())
+
+    def test_invalid_contest_schema_is_provider_failure(self):
+        for payload in [[], {'draftGroup':None}, {'draftGroup':42}]:
+            with patch('optimizer.providers.request',return_value=payload):
+                with self.assertRaises(ProviderError):
+                    fetch_contest('123')
+
+    def test_processing_failure_does_not_claim_unpublished_forecasts(self):
+        ui=ui_module();upload=io.StringIO(classic_csv());upload.name='pool.csv'
+        with patch('streamlit.file_uploader',side_effect=lambda label,**kw:upload if label=='Player pool CSV' else None), \
+             patch.object(ui,'automatic_data',side_effect=ValueError('regression sentinel')):
+            app=AppTest.from_file(str(ROOT/'optimizer'/'optimizer.py')).run(timeout=20)
+        self.assertEqual(len(app.exception),0)
+        self.assertTrue(any('Forecast processing failed' in error.value for error in app.error))
+        self.assertFalse(any('Future slate forecasts may not be published' in info.value for info in app.info))
+
     def test_full_revision_detects_changes_outside_typical_samples(self):
         frame=pd.DataFrame({'value':np.arange(50000)})
         first=frame_revision(frame);frame.loc[39877,'value']=-1

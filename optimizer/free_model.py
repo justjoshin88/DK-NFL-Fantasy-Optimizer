@@ -461,8 +461,12 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
                 model_data.loc[i, 'exclusion_reason'] = original.exclusion_reason
                 model_data.loc[i, 'injury_status'] = original.injury_status
             elif not original.exclusion_reason:
-                for column in original.index:
-                    model_data.loc[i, column] = original[column]
+                # Copy forecast fields only. Pool IDs, salaries and list-valued
+                # eligibility are authoritative; .loc treats a list as a vector.
+                for column in ['projection', 'exclusion_reason', 'injury_status',
+                               'source', 'source_url', 'source_updated', 'fetched_at',
+                               'ownership', 'spread', 'game_total', 'implied_team_total']:
+                    model_data.at[i, column] = original[column]
                 # Own-model uncertainty must not be attached to expert projections.
                 for column in MODEL_AUDIT:
                     model_data.loc[i, column] = np.nan
@@ -476,6 +480,15 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
     model_data.attrs['free_model_calibration'] = {pos: {k: model[k] for k in ['residuals', 'residual_bounds', 'residual_bins']} for pos, model in models.items()}
     model_data.attrs['free_model_calibration']['_dependence'] = dependence
     model_data.attrs['free_model_dependence'] = dependence_audit
+    model_data.attrs['upstream_evidence'] = {
+        'urls': datasets.get('urls', {}),
+        'history_revision': datasets.get('history_revision', ''),
+        'source_notes': datasets.get('source_notes', []),
+    }
+    model_data.attrs['model_specifications'] = {
+        pos: {key: model[key] for key in ['method', 'features', 'regularization', 'leaves'] if key in model}
+        for pos, model in models.items()
+    }
     model_data.attrs['data_status'] = {k: str(datasets.get(k) or 'Unknown') for k in ['history_fetched_at','status_fetched_at','rosters_updated','injuries_updated']}
     model_data.attrs['free_model_metrics'] = metrics
     model_data.attrs['free_model_folds'] = metrics.attrs.get('fold_metrics', pd.DataFrame())

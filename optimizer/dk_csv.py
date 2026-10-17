@@ -11,7 +11,7 @@ import pandas as pd
 
 CLASSIC = ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'DST']
 SHOWDOWN = ['CPT', 'FLEX', 'FLEX', 'FLEX', 'FLEX', 'FLEX']
-TEAM_ALIASES = {'JAC': 'JAX', 'WSH': 'WAS', 'LA': 'LAR', 'SD': 'LAC', 'OAK': 'LV'}
+TEAM_ALIASES = {'JAC': 'JAX', 'WSH': 'WAS', 'LA': 'LAR', 'SD': 'LAC', 'OAK': 'LV', 'AZ': 'ARI'}
 
 
 def normalize_name(value):

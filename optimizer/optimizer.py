@@ -92,7 +92,7 @@ class NFLOptimizer:
         return selected_indices
 
 
-APP_RELEASE = '2026.10.17.1'
+APP_RELEASE = '2026.10.17.2'
 
 def main():
     import streamlit as st

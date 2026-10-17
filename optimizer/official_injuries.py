@@ -81,7 +81,16 @@ def load_official(games, now):
     frames = [r[0] for r in results if not r[0].empty]
     return (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(),
             {f'official_injuries_{i}': r[1] for i, r in enumerate(results)},
-            [f'Official injury report: {r[2]}' for r in results if r[2]])
+            [f'Official injury report {r[1]}: {r[2]}' for r in results if r[2]])
+
+
+def slate_source_notes(notes, games, pool):
+    """A season-level status cache may also contain unpublished reports for another slate."""
+    relevant = games[games.gameday.astype(str).str[:10].isin(set(pool.game_date))]
+    urls = {f'https://www.nfl.com/injuries/league/{r.season}/{r.game_type.lower()}{r.week}'
+            for r in relevant[['season','week','game_type']].drop_duplicates().itertuples(index=False)}
+    return [note for note in notes if not note.startswith('Official injury report https://') or
+            any(note.startswith(f'Official injury report {url}:') for url in urls)]
 
 
 def apply_official(data, reports, now):

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from optimizer.official_injuries import parse_official, apply_official, load_official
+from optimizer.official_injuries import parse_official, apply_official, load_official, slate_source_notes
 from optimizer.forecast_validation import fit_candidate, predict, prediction_interval
 from optimizer.scenarios import sample_outcomes
 from optimizer.providers import ProviderError
@@ -34,6 +34,12 @@ def pool():
 
 
 class ResearchUpgradeTests(unittest.TestCase):
+    def test_other_slate_failures_do_not_warn_about_this_pool(self):
+        notes=['Roster stale', 'Official injury report https://www.nfl.com/injuries/league/2026/reg7: Unpublished',
+               'Official injury report https://www.nfl.com/injuries/league/2026/reg6: Schema changed']
+        scoped=slate_source_notes(notes,schedule(),pool())
+        self.assertEqual(scoped,[notes[0],notes[2]])
+
     def test_official_reports_verify_week_teams_and_nearest_date_heading(self):
         reports = parse_official(page(), schedule(), 2026, 6, 'REG', '2026-10-17T12:00Z')
         self.assertEqual(set(reports.team), {'ARI','LAR'})

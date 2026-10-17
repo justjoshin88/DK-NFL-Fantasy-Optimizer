@@ -18,7 +18,7 @@ from urllib3.util.retry import Retry
 try:
     from .forecast_features import MatchupContext, FEATURES, WORKLOAD, recency_vector
     from .forecast_validation import train_models, predict, fit_ridge, residual_sample, prediction_interval
-    from .official_injuries import load_official, apply_official
+    from .official_injuries import load_official, apply_official, slate_source_notes
     from .availability import depth_snapshot, player_availability
     from .scenarios import learn_dependence
     from .freshness import history_revision, recent_time
@@ -27,7 +27,7 @@ try:
 except ImportError:
     from forecast_features import MatchupContext, FEATURES, WORKLOAD, recency_vector
     from forecast_validation import train_models, predict, fit_ridge, residual_sample, prediction_interval
-    from official_injuries import load_official, apply_official
+    from official_injuries import load_official, apply_official, slate_source_notes
     from availability import depth_snapshot, player_availability
     from scenarios import learn_dependence
     from freshness import history_revision, recent_time
@@ -426,7 +426,7 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
         messages = [f'Expert forecast source unavailable: {exc}']
     data = match_projections(pool, public) if not public.empty else None
     datasets = datasets or load_datasets(pool)
-    messages.extend(datasets.get('source_notes', []))
+    messages.extend(slate_source_notes(datasets.get('source_notes', []), datasets['games'], pool))
     injury_data = datasets.get('injuries')
     if injury_data is None or injury_data.empty:
         messages.append('Current injury source unavailable; final participation remains unverified.')

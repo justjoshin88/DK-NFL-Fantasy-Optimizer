@@ -36,7 +36,7 @@ def setting(name, default=''):
 
 
 @st.cache_data(ttl=300, max_entries=16, show_spinner=False)
-def automatic_data(pool, provider, key_fingerprint='', _key='', production=False, revision='2026.10.17.1'):
+def automatic_data(pool, provider, key_fingerprint='', _key='', production=False, revision='2026.10.17.2'):
     if provider == 'Free automatic':
         season = pool_season(pool)
         history, status = free_history(season), free_status(season)
@@ -61,7 +61,7 @@ def free_history(season):
 
 
 @st.cache_data(ttl=300,max_entries=2,show_spinner=False)
-def free_status(season, revision='2026.10.17.1'):
+def free_status(season, revision='2026.10.17.2'):
     return load_status(season)
 
 

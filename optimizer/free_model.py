@@ -17,7 +17,8 @@ from urllib3.util.retry import Retry
 
 try:
     from .forecast_features import MatchupContext, FEATURES, WORKLOAD, recency_vector
-    from .forecast_validation import train_models, predict, fit_ridge, residual_sample
+    from .forecast_validation import train_models, predict, fit_ridge, residual_sample, prediction_interval
+    from .official_injuries import load_official, apply_official
     from .availability import depth_snapshot, player_availability
     from .scenarios import learn_dependence
     from .freshness import history_revision, recent_time
@@ -25,7 +26,8 @@ try:
     from .providers import ProviderError, fetch_public, match_projections, BAD_STATUS
 except ImportError:
     from forecast_features import MatchupContext, FEATURES, WORKLOAD, recency_vector
-    from forecast_validation import train_models, predict, fit_ridge, residual_sample
+    from forecast_validation import train_models, predict, fit_ridge, residual_sample, prediction_interval
+    from official_injuries import load_official, apply_official
     from availability import depth_snapshot, player_availability
     from scenarios import learn_dependence
     from freshness import history_revision, recent_time
@@ -39,7 +41,7 @@ POSITIONS = {'QB', 'RB', 'WR', 'TE', 'K', 'DST'}
 MODEL_AUDIT = ['projection_std', 'projection_floor', 'projection_ceiling', 'model_type', 'training_last_game', 'last_played',
                'history_games', 'historical_player_id', 'model_built_at', 'recent_opportunities', 'depth_rank', 'depth_updated',
                'injury_report_status', 'injury_report_week', 'injury_report_updated', 'availability_note',
-               'current_team_history_games', 'role_warning', 'rosters_updated']
+               'current_team_history_games', 'role_warning', 'rosters_updated', 'interval_method']
 
 SCORING_COLUMNS = ['passing_yards', 'passing_tds', 'passing_interceptions', 'rushing_yards', 'rushing_tds',
                 'receptions', 'receiving_yards', 'receiving_tds', 'fumbles_lost_total', 'special_teams_tds',
@@ -135,6 +137,10 @@ def load_status(season):
         datasets['source_notes'].append('Roster publisher timestamp is absent/stale; own-model roster eligibility is blocked.')
     if timestamps['injuries'] is None:
         datasets['source_notes'].append('Injury publisher freshness unavailable; report flags are not applied.')
+    official, official_urls, official_notes = load_official(schedule_times(datasets['games']), pd.Timestamp.now(tz='UTC'))
+    datasets['official_injuries'] = official
+    datasets['urls'].update(official_urls)
+    datasets['source_notes'].extend(official_notes)
     return datasets
 
 
@@ -392,10 +398,11 @@ def generate_forecasts(pool, datasets, as_of=None, artifacts=None):
         model = models[player.position]
         projection = float(predict(model, vector.reshape(1, -1))[0])
         residuals = residual_sample(model, projection)
+        lower, upper = prediction_interval(model, projection)
         output.append(dict(player_name=player.player_name, position=player.position, team=player.team, opponent=player.opponent,
                            game_date=player.game_date, projection=projection,
-                           projection_std=float(residuals.std()), projection_floor=max(0., projection+float(np.quantile(residuals, .1))),
-                           projection_ceiling=max(projection, projection+float(np.quantile(residuals, .9))),
+                           projection_std=float(residuals.std()), projection_floor=lower,
+                           projection_ceiling=upper, interval_method=model.get('interval_method', 'absolute'),
                            injury_status='Roster active; game-day injury status unverified', ownership=np.nan,
                            source='Our free nflverse model', source_url='https://nflreadr.nflverse.com/',
                            source_updated=as_of.isoformat(), fetched_at=as_of.isoformat(), model_type=model['method'],
@@ -436,7 +443,7 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
             if reason.startswith(('Unavailable on exact-week', 'Conflicting exact-week', 'Current depth chart', 'Current roster does not report active')):
                 data.loc[i, 'exclusion_reason'] = reason
         messages.append('Own model has no eligible histories; only covered public forecasts remain.')
-        return data, messages
+        return apply_official(data, datasets.get('official_injuries'), pd.Timestamp(as_of or pd.Timestamp.now(tz='UTC'))), messages
     if generated.empty:
         raise ProviderError('Free model found no eligible validated player histories for this slate. Check schedule and roster coverage.')
     model_data = match_projections(pool, generated)
@@ -486,7 +493,7 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
         'source_notes': datasets.get('source_notes', []),
     }
     model_data.attrs['model_specifications'] = {
-        pos: {key: model[key] for key in ['method', 'features', 'regularization', 'leaves'] if key in model}
+        pos: {key: model[key] for key in ['method', 'features', 'regularization', 'leaves', 'components', 'weights', 'interval_method'] if key in model}
         for pos, model in models.items()
     }
     model_data.attrs['data_status'] = {k: str(datasets.get(k) or 'Unknown') for k in ['history_fetched_at','status_fetched_at','rosters_updated','injuries_updated']}
@@ -495,4 +502,7 @@ def fetch_free(pool, datasets=None, as_of=None, artifacts=None):
     model_data.attrs['free_model_test_predictions'] = metrics.attrs.get('test_predictions', pd.DataFrame())
     model_data.attrs['free_model_notes'] = 'Own forecasts from real historical box scores; conditional on playing. Backtests reconstruct history and are not archived as-published forecasts. Exact-week injury/depth checks apply only when fresh and available; final participation, changing roles, ownership and payouts remain unverified.'
     messages.append('Free model estimates fill missing expert forecasts. Review chronological test errors and confirm final injury/role news before using these estimates.')
+    model_data = apply_official(model_data, datasets.get('official_injuries'), pd.Timestamp(as_of or pd.Timestamp.now(tz='UTC')))
+    if datasets.get('official_injuries') is not None and not datasets['official_injuries'].empty:
+        messages.append('Official NFL exact-game injury/practice reports checked. Retrieval time is recorded; the page does not expose a publisher update time. Blank designations and absent rows do not verify participation.')
     return model_data, messages

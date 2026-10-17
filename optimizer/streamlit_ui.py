@@ -36,7 +36,7 @@ def setting(name, default=''):
 
 
 @st.cache_data(ttl=300, max_entries=16, show_spinner=False)
-def automatic_data(pool, provider, key_fingerprint='', _key='', production=False):
+def automatic_data(pool, provider, key_fingerprint='', _key='', production=False, revision='2026.10.17.1'):
     if provider == 'Free automatic':
         season = pool_season(pool)
         history, status = free_history(season), free_status(season)
@@ -61,12 +61,12 @@ def free_history(season):
 
 
 @st.cache_data(ttl=300,max_entries=2,show_spinner=False)
-def free_status(season):
+def free_status(season, revision='2026.10.17.1'):
     return load_status(season)
 
 
 @st.cache_data(ttl=3600,max_entries=2,show_spinner=False)
-def free_model_artifacts(history_revision,schedule_revision,_history,_games):
+def free_model_artifacts(history_revision,schedule_revision,_history,_games,revision='2026.10.17.1'):
     return prepare_model({**_history,'games':_games})
 
 
@@ -273,9 +273,14 @@ def main(optimizer_class=None, release='development'):
     st.caption('Automatic snapshots expire after 15 minutes. Refresh before using a roster; uploaded forecast freshness remains user verified.')
     if 'free_model_metrics' in data.attrs:
         st.warning(data.attrs['free_model_notes'])
-        with st.expander('Free model: untouched chronological test results'):
+        with st.expander('Free model: chronological evaluation results'):
             st.dataframe(pd.DataFrame(data.attrs['free_model_metrics']), hide_index=True)
-            st.caption('Initial 50% of dates train candidates; the next 20% use three expanding validation blocks to select recency, ridge or boosted trees by RMSE. Separate 10% calibrates intervals and correlations; final 20% tests frozen models. Historical data may include later stat corrections, and absent player boxes are not fully observed participation outcomes. These diagnostics are not live archived forecast accuracy or contest profit.')
+            st.caption('Initial 50% of dates train candidates; the next 20% use three expanding validation blocks to select recency, ridge, boosted trees or fixed-weight ensembles by RMSE. Interval shape is selected on tuning folds using a score that penalizes width and misses. Separate 10% calibrates errors and correlations; final 20% evaluates frozen choices. The production model is refitted on all available past outcomes, so these are reconstruction diagnostics, not a direct test of the refitted live model. Later stat corrections and absent player boxes remain limitations.')
+            metrics = data.attrs['free_model_metrics']
+            if 'interval_80_coverage' in metrics:
+                weak = metrics[metrics.interval_80_coverage < .75]
+                if not weak.empty:
+                    st.warning('Nominal 80% ranges undercovered in the chronological test for: '+', '.join(weak.position)+'. Treat these ranges as uncertain estimates; temporal dependence and role changes prevent a coverage guarantee.')
             st.download_button('Download test predictions', data.attrs['free_model_test_predictions'].to_csv(index=False), 'model_test_predictions.csv', 'text/csv')
             st.download_button('Download validation comparisons', data.attrs['free_model_folds'].to_csv(index=False), 'model_validation_folds.csv', 'text/csv')
         with st.expander('Game correlation estimates'):
@@ -306,7 +311,9 @@ def main(optimizer_class=None, release='development'):
         st.error('No eligible current forecasts for this pool. No lineup can be generated.')
         return
     display = [c for c in ['player_name', 'player_id', 'position', 'team', 'opponent', 'game_date', 'salary', 'projection',
+                           'official_status', 'official_practice', 'official_injury', 'official_observed_at',
                            'injury_status', 'ownership', 'game_total', 'implied_team_total', 'source', 'model_type', 'history_games',
+                           'projection_floor', 'projection_ceiling', 'interval_method',
                            'last_played', 'recent_opportunities', 'current_team_history_games', 'role_warning', 'depth_rank', 'depth_updated', 'injury_report_status',
                            'injury_report_updated', 'rosters_updated', 'availability_note', 'training_last_game', 'model_built_at', 'source_updated', 'fetched_at'] if c in available]
     st.dataframe(available[display], hide_index=True)
@@ -315,6 +322,9 @@ def main(optimizer_class=None, release='development'):
         with st.expander('Sources'):
             for url in available.source_url.dropna().unique():
                 st.write(url)
+            if 'official_source_url' in data:
+                for url in sorted(set(data.official_source_url.dropna())-{''}):
+                    st.write(url)
     calibration = None
     if 'free_model_calibration' in data.attrs and available.source.eq('Our free nflverse model').all():
         calibration = data.attrs['free_model_calibration']

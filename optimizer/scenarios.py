@@ -82,7 +82,9 @@ def sample_outcomes(data, calibration, n_sims, rng):
         model = calibration[player.position]
         residuals = residual_sample(model, player.projection)
         points = player.projection + np.quantile(residuals, uniforms[:, i])
-        if player.position != 'DST':
+        # Offensive players can score below zero through turnovers/negative
+        # yardage. Do not silently erase that downside from simulated lineups.
+        if player.position == 'K':
             points = np.maximum(points, 0.)
         outcomes[player.athlete_key] = points
     return outcomes
